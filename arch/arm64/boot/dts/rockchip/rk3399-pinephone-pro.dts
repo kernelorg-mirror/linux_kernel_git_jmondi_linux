@@ -886,7 +886,7 @@
 		powerdown-gpios = <&gpio2 RK_PD4 GPIO_ACTIVE_HIGH>;
 
 		orientation = <1>;
-		rotation = <180>;
+		rotation = <270>;
 
 		lens-focus = <&wcam_lens>;
 		flash-leds = <&sgm3140_flash>;
@@ -921,7 +921,7 @@
 		powerdown-gpios = <&gpio2 RK_PB4 GPIO_ACTIVE_LOW>;
 
 		orientation = <0>;
-		rotation = <180>;
+		rotation = <90>;
 
 		port {
 			ucam_out: endpoint {
