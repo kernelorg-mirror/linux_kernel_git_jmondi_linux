@@ -12,7 +12,6 @@
 #include "dphy.h"
 
 #define dphy_dbg(fmt, arg...) dev_dbg(dphy->dev, fmt, ##arg)
-#define dphy_info(fmt, arg...) dev_info(dphy->dev, fmt, ##arg)
 #define dphy_err(fmt, arg...) dev_err(dphy->dev, fmt, ##arg)
 
 /* DW dphy Host registers */
@@ -172,5 +171,5 @@ void dphy_probe(struct dphy_data *dphy)
 	host_ver_minor = host_ver_minor * 10;
 	host_ver_minor += (u8)((host_ver >> 8) - '0');
 
-	dphy_info("DW dphy Host HW v%u.%u\n", host_ver_major, host_ver_minor);
+	dphy_dbg("DW dphy Host HW v%u.%u\n", host_ver_major, host_ver_minor);
 }

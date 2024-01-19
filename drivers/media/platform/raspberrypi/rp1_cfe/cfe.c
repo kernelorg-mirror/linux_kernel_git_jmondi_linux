@@ -56,7 +56,6 @@ MODULE_PARM_DESC(verbose_debug, "verbose debugging messages");
 			dev_dbg(&cfe->pdev->dev, fmt, ##arg); \
 	} while (0)
 #define cfe_dbg(fmt, arg...) dev_dbg(&cfe->pdev->dev, fmt, ##arg)
-#define cfe_info(fmt, arg...) dev_info(&cfe->pdev->dev, fmt, ##arg)
 #define cfe_err(fmt, arg...) dev_err(&cfe->pdev->dev, fmt, ##arg)
 
 /* MIPICFG registers */
@@ -1815,8 +1814,8 @@ static int cfe_register_node(struct cfe_device *cfe, int id)
 		return ret;
 	}
 
-	cfe_info("Registered [%s] node id %d successfully as /dev/video%u\n",
-		 vdev->name, id, vdev->num);
+	cfe_dbg("Registered [%s] node id %d successfully as /dev/video%u\n",
+		vdev->name, id, vdev->num);
 
 	/*
 	 * Acquire a reference to cfe, which will be released when the video
@@ -1959,7 +1958,7 @@ static int cfe_async_bound(struct v4l2_async_notifier *notifier,
 	struct cfe_device *cfe = to_cfe_device(notifier->v4l2_dev);
 
 	if (cfe->csi2.source_sd) {
-		cfe_info("Rejecting subdev %s (Already set!!)", subdev->name);
+		cfe_err("Rejecting subdev %s (Already set!!)", subdev->name);
 		return 0;
 	}
 

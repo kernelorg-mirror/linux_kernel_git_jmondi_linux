@@ -28,7 +28,6 @@ MODULE_PARM_DESC(track_csi2_errors, "track csi-2 errors");
 			dev_dbg(csi2->v4l2_dev->dev, fmt, ##arg); \
 	} while (0)
 #define csi2_dbg(fmt, arg...) dev_dbg(csi2->v4l2_dev->dev, fmt, ##arg)
-#define csi2_info(fmt, arg...) dev_info(csi2->v4l2_dev->dev, fmt, ##arg)
 #define csi2_err(fmt, arg...) dev_err(csi2->v4l2_dev->dev, fmt, ##arg)
 
 /* CSI2-DMA registers */
