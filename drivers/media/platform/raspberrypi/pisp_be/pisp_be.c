@@ -174,8 +174,11 @@ struct pispbe_node {
 	struct media_intf_devnode *intf_devnode;
 	struct media_link *intf_link;
 	struct pispbe_node_group *node_group;
+	/* XXX video_device->lock */
 	struct mutex node_lock;
+	/* XXX vb2_queue->lock */
 	struct mutex queue_lock;
+	/* XXX pispbe_node->ready_queue and pispbe_buffer->ready_list */
 	spinlock_t ready_lock;
 	struct list_head ready_queue;
 	struct vb2_queue queue;
