@@ -1082,8 +1082,8 @@ static int pispbe_node_g_fmt_meta_cap(struct file *file, void *priv,
 	return 0;
 }
 
-static int verify_be_pix_format(const struct v4l2_format *f,
-				struct pispbe_node *node)
+static int pispbe_validate_pixfmt(const struct v4l2_format *f,
+				  struct pispbe_node *node)
 {
 	struct pispbe_dev *pispbe = node->node_group->pispbe;
 	unsigned int nplanes = f->fmt.pix_mp.num_planes;
@@ -1117,7 +1117,7 @@ static int verify_be_pix_format(const struct v4l2_format *f,
 	return 0;
 }
 
-static const struct pisp_be_format *find_format(unsigned int fourcc)
+static const struct pisp_be_format *pispbe_find_fmt(unsigned int fourcc)
 {
 	const struct pisp_be_format *fmt;
 	unsigned int i;
@@ -1131,7 +1131,7 @@ static const struct pisp_be_format *find_format(unsigned int fourcc)
 	return NULL;
 }
 
-static void set_plane_params(struct v4l2_format *f,
+static void pispbe_set_plane_params(struct v4l2_format *f,
 			     const struct pisp_be_format *fmt)
 {
 	unsigned int nplanes = f->fmt.pix_mp.num_planes;
@@ -1161,7 +1161,7 @@ static void set_plane_params(struct v4l2_format *f,
 	}
 }
 
-static int try_format(struct v4l2_format *f, struct pispbe_node *node)
+static int pispbe_try_format(struct v4l2_format *f, struct pispbe_node *node)
 {
 	struct pispbe_dev *pispbe = node->node_group->pispbe;
 	const struct pisp_be_format *fmt;
@@ -1176,13 +1176,13 @@ static int try_format(struct v4l2_format *f, struct pispbe_node *node)
 		f->fmt.pix_mp.num_planes);
 
 	if (pixfmt == V4L2_PIX_FMT_RPI_BE)
-		return verify_be_pix_format(f, node);
+		return pispbe_validate_pixfmt(f, node);
 
-	fmt = find_format(pixfmt);
+	fmt = pispbe_find_fmt(pixfmt);
 	if (!fmt) {
 		dev_dbg(pispbe->dev, "%s: [%s] Format not found, defaulting to YUV420\n",
 			__func__, NODE_NAME(node));
-		fmt = find_format(V4L2_PIX_FMT_YUV420);
+		fmt = pispbe_find_fmt(V4L2_PIX_FMT_YUV420);
 	}
 
 	f->fmt.pix_mp.pixelformat = fmt->fourcc;
@@ -1213,7 +1213,7 @@ static int try_format(struct v4l2_format *f, struct pispbe_node *node)
 					      f->fmt.pix_mp.ycbcr_enc);
 
 	/* Set plane size and bytes/line for each plane. */
-	set_plane_params(f, fmt);
+	pispbe_set_plane_params(f, fmt);
 
 	for (i = 0; i < f->fmt.pix_mp.num_planes; i++) {
 		dev_dbg(pispbe->dev,
@@ -1241,7 +1241,7 @@ static int pispbe_node_try_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	ret = try_format(f, node);
+	ret = pispbe_try_format(f, node);
 	if (ret < 0)
 		return ret;
 
@@ -1262,7 +1262,7 @@ static int pispbe_node_try_fmt_vid_out(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	ret = try_format(f, node);
+	ret = pispbe_try_format(f, node);
 	if (ret < 0)
 		return ret;
 
@@ -1319,7 +1319,7 @@ static int pispbe_node_s_fmt_vid_cap(struct file *file, void *priv,
 		return ret;
 
 	node->format = *f;
-	node->pisp_format = find_format(f->fmt.pix_mp.pixelformat);
+	node->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
 
 	dev_dbg(pispbe->dev,
 		"Set capture format for node %s to %p4cc\n",
@@ -1339,7 +1339,7 @@ static int pispbe_node_s_fmt_vid_out(struct file *file, void *priv,
 		return ret;
 
 	node->format = *f;
-	node->pisp_format = find_format(f->fmt.pix_mp.pixelformat);
+	node->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
 
 	dev_dbg(pispbe->dev,
 		"Set output format for node %s to %p4cc\n",
@@ -1379,7 +1379,7 @@ static int pispbe_node_s_fmt_meta_cap(struct file *file, void *priv,
 		return ret;
 
 	node->format = *f;
-	node->pisp_format = find_format(f->fmt.meta.dataformat);
+	node->pisp_format = pispbe_find_fmt(f->fmt.meta.dataformat);
 
 	dev_dbg(pispbe->dev,
 		"Set capture format for meta node %s to %p4cc\n",
@@ -1426,7 +1426,7 @@ static int pispbe_enum_framesizes(struct file *file, void *priv,
 	if (NODE_IS_META(node) || fsize->index)
 		return -EINVAL;
 
-	if (!find_format(fsize->pixel_format)) {
+	if (!pispbe_find_fmt(fsize->pixel_format)) {
 		dev_dbg(pispbe->dev, "Invalid pixel code: %x\n",
 			fsize->pixel_format);
 		return -EINVAL;
@@ -1509,7 +1509,7 @@ static const struct video_device pispbe_videodev = {
 	.release = video_device_release_empty,
 };
 
-static void node_set_default_format(struct pispbe_node *node)
+static void pispbe_node_def_fmt(struct pispbe_node *node)
 {
 	if (NODE_IS_META(node) && NODE_IS_OUTPUT(node)) {
 		/* Config node */
@@ -1532,19 +1532,19 @@ static void node_set_default_format(struct pispbe_node *node)
 		f.fmt.pix_mp.width = 1920;
 		f.fmt.pix_mp.height = 1080;
 		f.type = node->buf_type;
-		try_format(&f, node);
+		pispbe_try_format(&f, node);
 		node->format = f;
 	}
 
-	node->pisp_format = find_format(node->format.fmt.pix_mp.pixelformat);
+	node->pisp_format = pispbe_find_fmt(node->format.fmt.pix_mp.pixelformat);
 }
 
 /*
  * Initialise a struct pispbe_node and register it as /dev/video<N>
  * to represent one of the PiSP Back End's input or output streams.
  */
-static int
-pispbe_init_node(struct pispbe_node_group *node_group, unsigned int id)
+static int pispbe_init_node(struct pispbe_node_group *node_group,
+			    unsigned int id)
 {
 	bool output = NODE_DESC_IS_OUTPUT(&node_desc[id]);
 	struct pispbe_node *node = &node_group->node[id];
@@ -1564,7 +1564,7 @@ pispbe_init_node(struct pispbe_node_group *node_group, unsigned int id)
 	spin_lock_init(&node->ready_lock);
 
 	node->format.type = node->buf_type;
-	node_set_default_format(node);
+	pispbe_node_def_fmt(node);
 
 	q->type = node->buf_type;
 	q->io_modes = VB2_MMAP | VB2_DMABUF;
