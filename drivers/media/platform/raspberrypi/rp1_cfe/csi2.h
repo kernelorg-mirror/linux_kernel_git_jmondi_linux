@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * RP1 CSI-2 driver.
+ * Copyright (c) 2021 Raspberry Pi Ltd.
  *
- * Copyright (c) 2021-2024 Raspberry Pi Ltd.
- * Copyright (c) 2023-2024 Ideas on Board Oy
  */
-
 #ifndef _RP1_CSI2_
 #define _RP1_CSI2_
 
@@ -18,11 +16,6 @@
 #include "dphy.h"
 
 #define CSI2_NUM_CHANNELS 4
-
-#define CSI2_PAD_SINK 0
-#define CSI2_PAD_FIRST_SOURCE 1
-#define CSI2_PAD_NUM_SOURCES 4
-#define CSI2_NUM_PADS 5
 
 #define DISCARDS_TABLE_NUM_VCS 4
 
@@ -37,6 +30,13 @@ enum csi2_compression_mode {
 	CSI2_COMPRESSION_DELTA = 1,
 	CSI2_COMPRESSION_SIMPLE = 2,
 	CSI2_COMPRESSION_COMBINED = 3,
+};
+
+struct csi2_cfg {
+	u16 width;
+	u16 height;
+	u32 stride;
+	u32 buffer_size;
 };
 
 enum discards_table_index {
@@ -57,28 +57,12 @@ struct csi2_device {
 
 	enum v4l2_mbus_type bus_type;
 	unsigned int bus_flags;
+	u32 active_data_lanes;
 	bool multipacket_line;
+	unsigned int num_lines[CSI2_NUM_CHANNELS];
 
-	struct {
-		bool enable;
-
-		enum csi2_mode mode;
-		bool auto_arm;
-		bool pack_bytes;
-
-		struct {
-			enum csi2_compression_mode mode;
-			u32 shift;
-			u32 offset;
-		} compression;
-
-	} channel_configs[CSI2_NUM_CHANNELS];
-
-	struct media_pad pad[CSI2_NUM_PADS];
+	struct media_pad pad[CSI2_NUM_CHANNELS * 2];
 	struct v4l2_subdev sd;
-
-	struct v4l2_subdev *source_sd;
-	u64 source_stream_mask;
 
 	/* lock for csi2 errors counters */
 	spinlock_t errors_lock;
@@ -91,13 +75,17 @@ void csi2_isr(struct csi2_device *csi2, bool *sof, bool *eof);
 void csi2_set_buffer(struct csi2_device *csi2, unsigned int channel,
 		     dma_addr_t dmaaddr, unsigned int stride,
 		     unsigned int size);
+void csi2_set_compression(struct csi2_device *csi2, unsigned int channel,
+			  enum csi2_compression_mode mode, unsigned int shift,
+			  unsigned int offset);
+void csi2_start_channel(struct csi2_device *csi2, unsigned int channel,
+			enum csi2_mode mode, bool auto_arm,
+			bool pack_bytes, unsigned int width,
+			unsigned int height);
+void csi2_stop_channel(struct csi2_device *csi2, unsigned int channel);
+void csi2_open_rx(struct csi2_device *csi2);
+void csi2_close_rx(struct csi2_device *csi2);
 int csi2_init(struct csi2_device *csi2, struct dentry *debugfs);
 void csi2_uninit(struct csi2_device *csi2);
-
-int csi2_configure(struct csi2_device *csi2, struct v4l2_subdev_state *state);
-int csi2_start_streaming(struct csi2_device *csi2,
-			 struct v4l2_subdev_state *state);
-void csi2_stop_streaming(struct csi2_device *csi2,
-			 struct v4l2_subdev_state *state);
 
 #endif

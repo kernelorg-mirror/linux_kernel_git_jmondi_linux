@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * RP1 CFE driver.
-
- * Copyright (c) 2021-2024 Raspberry Pi Ltd.
- * Copyright (c) 2023-2024 Ideas on Board Oy
+ * Copyright (c) 2021 Raspberry Pi Ltd.
+ *
  */
 #ifndef _RP1_CFE_
 #define _RP1_CFE_
