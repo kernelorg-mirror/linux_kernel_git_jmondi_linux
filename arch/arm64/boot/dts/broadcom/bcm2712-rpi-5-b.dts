@@ -749,7 +749,7 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 	#size-cells = <0>;
 	status = "okay";
 
-	cam_node: imx219@10 {
+	cam0_node: imx219@10 {
 		compatible = "sony,imx219";
 		reg = <0x10>;
 		status = "disabled";
@@ -765,7 +765,7 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 		orientation = <2>;
 
 		port {
-			cam_endpoint: endpoint {
+			cam0_endpoint: endpoint {
 				clock-lanes = <0>;
 				data-lanes = <1 2>;
 				clock-noncontinuous;
@@ -775,7 +775,7 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 		};
 	};
 
-	vcm: ad5398@c {
+	vcm0: ad5398@c {
 		compatible = "adi,ad5398";
 		reg = <0x0c>;
 		status = "disabled";
@@ -788,8 +788,8 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 	brcm,media-controller;
 
 	port {
-		csi_ep: endpoint {
-			remote-endpoint = <&cam_endpoint>;
+		csi0_ep: endpoint {
+			remote-endpoint = <&cam0_endpoint>;
 			clock-lanes = <0>;
 			data-lanes = <1 2>;
 			clock-noncontinuous;
@@ -797,10 +797,10 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 	};
 };
 
-&cam_node {
+&cam0_node {
 	status = "okay";
 };
 
-&cam_endpoint {
-	remote-endpoint = <&csi_ep>;
+&cam0_endpoint {
+	remote-endpoint = <&csi0_ep>;
 };
