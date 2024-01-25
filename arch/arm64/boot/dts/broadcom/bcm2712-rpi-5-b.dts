@@ -804,3 +804,71 @@ spi10_cs_pins: &spi10_cs_gpio1 {};
 &cam0_endpoint {
 	remote-endpoint = <&csi0_ep>;
 };
+
+/* IMX219 Camera on CSI1 */
+
+&cam1_clk {
+	status = "okay";
+	clock-frequency = <24000000>;
+};
+
+&i2c_csi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	cam1_node: imx219@10 {
+		compatible = "sony,imx219";
+		reg = <0x10>;
+		status = "disabled";
+
+		clocks = <&cam1_clk>;
+		clock-names = "xclk";
+
+		VANA-supply = <&cam1_reg>;	/* 2.8v */
+		VDIG-supply = <&cam_dummy_reg>;	/* 1.8v */
+		VDDL-supply = <&cam_dummy_reg>;	/* 1.2v */
+
+		rotation = <180>;
+		orientation = <2>;
+
+		port {
+			cam1_endpoint: endpoint {
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				clock-noncontinuous;
+				link-frequencies =
+					/bits/ 64 <456000000>;
+			};
+		};
+	};
+
+	vcm1: ad5398@c {
+		compatible = "adi,ad5398";
+		reg = <0x0c>;
+		status = "disabled";
+		VANA-supply = <&cam1_reg>;
+	};
+};
+
+&csi1 {
+	status = "okay";
+	brcm,media-controller;
+
+	port {
+		csi1_ep: endpoint {
+			remote-endpoint = <&cam1_endpoint>;
+			clock-lanes = <0>;
+			data-lanes = <1 2>;
+			clock-noncontinuous;
+		};
+	};
+};
+
+&cam1_node {
+	status = "okay";
+};
+
+&cam1_endpoint {
+	remote-endpoint = <&csi1_ep>;
+};
