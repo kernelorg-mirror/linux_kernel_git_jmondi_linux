@@ -258,7 +258,6 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 			     struct pispbe_job_descriptor *job)
 {
 	unsigned int begin, end;
-	unsigned int u;
 
 	if (pispbe_rd(pispbe, PISP_BE_STATUS_REG) & PISP_BE_STATUS_QUEUED)
 		dev_err(pispbe->dev, "ERROR: not safe to queue new job!\n");
@@ -269,7 +268,7 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 	 * and we don't want to modify (or be vulnerable to modifications of)
 	 * the mmap'd buffer.
 	 */
-	for (u = 0; u < N_HW_ADDRESSES; ++u) {
+	for (unsigned int u = 0; u < N_HW_ADDRESSES; ++u) {
 		pispbe_wr(pispbe, PISP_BE_IO_INPUT_ADDR0(u),
 			  job->hw_dma_addrs[u]);
 		pispbe_wr(pispbe, PISP_BE_IO_INPUT_ADDR0(u) + 4,
@@ -285,12 +284,12 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 	begin =	offsetof(struct pisp_be_config, global.bayer_order)
 	      / sizeof(u32);
 	end = offsetof(struct pisp_be_config, axi) / sizeof(u32);
-	for (u = begin; u < end; u++)
+	for (unsigned int u = begin; u < end; u++)
 		pispbe_wr(pispbe, PISP_BE_CONFIG_BASE_REG + 4 * u,
 			  ((u32 *)job->config)[u]);
 
 	/* Read back the addresses -- an error here could be fatal */
-	for (u = 0; u < N_HW_ADDRESSES; ++u) {
+	for (unsigned int u = 0; u < N_HW_ADDRESSES; ++u) {
 		unsigned int offset = PISP_BE_IO_INPUT_ADDR0(u);
 		u64 along = pispbe_rd(pispbe, offset);
 
@@ -374,7 +373,6 @@ static void pispbe_xlate_addrs(dma_addr_t addrs[N_HW_ADDRESSES],
 			       struct pispbe_buffer *buf[PISPBE_NUM_NODES],
 			       struct pispbe_node_group *node_group)
 {
-	unsigned int i;
 	int ret;
 
 	/* Take a copy of the "enable" bitmaps so we can modify them. */
@@ -441,7 +439,7 @@ static void pispbe_xlate_addrs(dma_addr_t addrs[N_HW_ADDRESSES],
 	}
 
 	/* Main image output channels. */
-	for (i = 0; i < PISP_BACK_END_NUM_OUTPUTS; i++) {
+	for (unsigned int i = 0; i < PISP_BACK_END_NUM_OUTPUTS; i++) {
 		ret = pispbe_get_planes_addr(addrs + 7 + 3 * i,
 					     buf[OUTPUT0_NODE + i],
 					     &node_group->node[OUTPUT0_NODE + i]);
@@ -477,7 +475,6 @@ static int pispbe_prepare_job(struct pispbe_node_group *node_group,
 	struct pispbe_node *node;
 	unsigned long flags;
 	unsigned int config_index;
-	unsigned int i;
 
 	lockdep_assert_held(&pispbe->hw_lock);
 
@@ -506,7 +503,7 @@ static int pispbe_prepare_job(struct pispbe_node_group *node_group,
 		   + offsetof(struct pisp_be_tiles_config, tiles);
 
 	/* remember: srcimages, captures then metadata */
-	for (i = 0; i < PISPBE_NUM_NODES; i++) {
+	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
 		unsigned int bayer_en =
 			job->config->config.global.bayer_enables;
 		unsigned int rgb_en =
@@ -555,7 +552,7 @@ static int pispbe_prepare_job(struct pispbe_node_group *node_group,
 	}
 
 	/* Pull a buffer from each V4L2 queue to form the queued job */
-	for (i = 0; i < PISPBE_NUM_NODES; i++) {
+	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
 		if (buf[i]) {
 			node = &node_group->node[i];
 
@@ -582,7 +579,6 @@ static void pispbe_schedule(struct pispbe_dev *pispbe,
 {
 	struct pispbe_job_descriptor job;
 	unsigned long flags;
-	unsigned int i;
 
 	spin_lock_irqsave(&pispbe->hw_lock, flags);
 
@@ -592,7 +588,7 @@ static void pispbe_schedule(struct pispbe_dev *pispbe,
 	if (pispbe->hw_busy)
 		goto unlock_and_return;
 
-	for (i = 0; i < PISPBE_NUM_NODE_GROUPS; i++) {
+	for (unsigned int i = 0; i < PISPBE_NUM_NODE_GROUPS; i++) {
 		int ret;
 
 		/* Schedule jobs only for a specific group. */
@@ -652,9 +648,8 @@ static void pispbe_isr_jobdone(struct pispbe_dev *pispbe,
 {
 	struct pispbe_buffer **buf = job->buf;
 	u64 ts = ktime_get_ns();
-	int i;
 
-	for (i = 0; i < PISPBE_NUM_NODES; i++) {
+	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
 		if (buf[i]) {
 			buf[i]->vb.vb2_buf.timestamp = ts;
 			vb2_buffer_done(&buf[i]->vb.vb2_buf,
@@ -725,7 +720,7 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 	u32 rgb_enables = config->config.global.rgb_enables;
 	struct device *dev = node_group->pispbe->dev;
 	struct v4l2_format *fmt;
-	unsigned int bpl, size, i, j;
+	unsigned int bpl, size;
 
 	if (!(bayer_enables & PISP_BE_BAYER_ENABLE_INPUT) ==
 	    !(rgb_enables & PISP_BE_RGB_ENABLE_INPUT)) {
@@ -766,7 +761,7 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 		}
 	}
 
-	for (j = 0; j < PISP_BACK_END_NUM_OUTPUTS; j++) {
+	for (unsigned int j = 0; j < PISP_BACK_END_NUM_OUTPUTS; j++) {
 		if (!(rgb_enables & PISP_BE_RGB_ENABLE_OUTPUT(j)))
 			continue;
 		if (config->config.output_format[j].image.format &
@@ -774,7 +769,7 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 			continue; /* TODO: Size checks for wallpaper formats */
 
 		fmt = &node_group->node[OUTPUT0_NODE + j].format;
-		for (i = 0; i < fmt->fmt.pix_mp.num_planes; i++) {
+		for (unsigned int i = 0; i < fmt->fmt.pix_mp.num_planes; i++) {
 			bpl = !i ? config->config.output_format[j].image.stride
 			    : config->config.output_format[j].image.stride2;
 			size = bpl * config->config.output_format[j].image.height;
@@ -807,10 +802,9 @@ static int pispbe_node_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 
 	*nplanes = 1;
 	if (NODE_IS_MPLANE(node)) {
-		unsigned int i;
 
 		*nplanes = node->format.fmt.pix_mp.num_planes;
-		for (i = 0; i < *nplanes; i++) {
+		for (unsigned int i = 0; i < *nplanes; i++) {
 			unsigned int size =
 				node->format.fmt.pix_mp.plane_fmt[i].sizeimage;
 			if (sizes[i] && sizes[i] < size) {
@@ -845,9 +839,8 @@ static int pispbe_node_buffer_prepare(struct vb2_buffer *vb)
 	unsigned long size = 0;
 	unsigned int num_planes = NODE_IS_MPLANE(node) ?
 					node->format.fmt.pix_mp.num_planes : 1;
-	unsigned int i;
 
-	for (i = 0; i < num_planes; i++) {
+	for (unsigned int i = 0; i < num_planes; i++) {
 		size = NODE_IS_MPLANE(node)
 			? node->format.fmt.pix_mp.plane_fmt[i].sizeimage
 			: node->format.fmt.meta.buffersize;
@@ -1087,7 +1080,6 @@ static int pispbe_validate_pixfmt(const struct v4l2_format *f,
 {
 	struct pispbe_dev *pispbe = node->node_group->pispbe;
 	unsigned int nplanes = f->fmt.pix_mp.num_planes;
-	unsigned int i;
 
 	if (f->fmt.pix_mp.width == 0 || f->fmt.pix_mp.height == 0) {
 		dev_err(pispbe->dev, "Details incorrect for output node %s\n",
@@ -1102,7 +1094,7 @@ static int pispbe_validate_pixfmt(const struct v4l2_format *f,
 		return -EINVAL;
 	}
 
-	for (i = 0; i < nplanes; i++) {
+	for (unsigned int i = 0; i < nplanes; i++) {
 		const struct v4l2_plane_pix_format *p;
 
 		p = &f->fmt.pix_mp.plane_fmt[i];
@@ -1120,9 +1112,8 @@ static int pispbe_validate_pixfmt(const struct v4l2_format *f,
 static const struct pisp_be_format *pispbe_find_fmt(unsigned int fourcc)
 {
 	const struct pisp_be_format *fmt;
-	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(supported_formats); i++) {
+	for (unsigned int i = 0; i < ARRAY_SIZE(supported_formats); i++) {
 		fmt = &supported_formats[i];
 		if (fmt->fourcc == fourcc)
 			return fmt;
@@ -1136,12 +1127,11 @@ static void pispbe_set_plane_params(struct v4l2_format *f,
 {
 	unsigned int nplanes = f->fmt.pix_mp.num_planes;
 	unsigned int total_plane_factor = 0;
-	unsigned int i;
 
-	for (i = 0; i < PISPBE_MAX_PLANES; i++)
+	for (unsigned int i = 0; i < PISPBE_MAX_PLANES; i++)
 		total_plane_factor += fmt->plane_factor[i];
 
-	for (i = 0; i < nplanes; i++) {
+	for (unsigned int i = 0; i < nplanes; i++) {
 		struct v4l2_plane_pix_format *p = &f->fmt.pix_mp.plane_fmt[i];
 		unsigned int bpl, plane_size;
 
@@ -1165,7 +1155,6 @@ static int pispbe_try_format(struct v4l2_format *f, struct pispbe_node *node)
 {
 	struct pispbe_dev *pispbe = node->node_group->pispbe;
 	const struct pisp_be_format *fmt;
-	unsigned int i;
 	bool is_rgb;
 	u32 pixfmt = f->fmt.pix_mp.pixelformat;
 
@@ -1217,7 +1206,7 @@ static int pispbe_try_format(struct v4l2_format *f, struct pispbe_node *node)
 	/* Set plane size and bytes/line for each plane. */
 	pispbe_set_plane_params(f, fmt);
 
-	for (i = 0; i < f->fmt.pix_mp.num_planes; i++) {
+	for (unsigned int i = 0; i < f->fmt.pix_mp.num_planes; i++) {
 		dev_dbg(pispbe->dev,
 			"%s: [%s] calc plane %d, %ux%u, depth %u, bpl %u size %u\n",
 			__func__, NODE_NAME(node), i, f->fmt.pix_mp.width,
@@ -1646,7 +1635,6 @@ static int pispbe_init_subdev(struct pispbe_node_group *node_group)
 {
 	struct pispbe_dev *pispbe = node_group->pispbe;
 	struct v4l2_subdev *sd = &node_group->sd;
-	unsigned int i;
 	int ret;
 
 	v4l2_subdev_init(sd, &pispbe_sd_ops);
@@ -1655,7 +1643,7 @@ static int pispbe_init_subdev(struct pispbe_node_group *node_group)
 	sd->dev = pispbe->dev;
 	strscpy(sd->name, PISPBE_NAME, sizeof(sd->name));
 
-	for (i = 0; i < PISPBE_NUM_NODES; i++)
+	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++)
 		node_group->pad[i].flags =
 			NODE_DESC_IS_OUTPUT(&node_desc[i]) ?
 			MEDIA_PAD_FL_SINK : MEDIA_PAD_FL_SOURCE;
@@ -1755,7 +1743,6 @@ err_media_dev_cleanup:
 static void pispbe_destroy_node_group(struct pispbe_node_group *node_group)
 {
 	struct pispbe_dev *pispbe = node_group->pispbe;
-	int i;
 
 	if (node_group->config) {
 		dma_free_coherent(node_group->pispbe->dev,
@@ -1771,7 +1758,7 @@ static void pispbe_destroy_node_group(struct pispbe_node_group *node_group)
 	media_entity_cleanup(&node_group->sd.entity);
 	media_device_unregister(&node_group->mdev);
 
-	for (i = PISPBE_NUM_NODES - 1; i >= 0; i--) {
+	for (int i = PISPBE_NUM_NODES - 1; i >= 0; i--) {
 		video_unregister_device(&node_group->node[i].vfd);
 		vb2_queue_release(&node_group->node[i].queue);
 	}
@@ -1936,9 +1923,8 @@ pm_runtime_disable_err:
 static int pispbe_remove(struct platform_device *pdev)
 {
 	struct pispbe_dev *pispbe = platform_get_drvdata(pdev);
-	int i;
 
-	for (i = PISPBE_NUM_NODE_GROUPS - 1; i >= 0; i--)
+	for (int i = PISPBE_NUM_NODE_GROUPS - 1; i >= 0; i--)
 		pispbe_destroy_node_group(&pispbe->node_group[i]);
 
 	pm_runtime_dont_use_autosuspend(pispbe->dev);
