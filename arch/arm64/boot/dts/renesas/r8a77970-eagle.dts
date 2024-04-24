@@ -418,3 +418,10 @@
 &scif_clk {
 	clock-frequency = <14745600>;
 };
+
+#define GMSL_CAMERA_RDACM20
+#define GMSL_CAMERA_0
+#define GMSL_CAMERA_1
+#define GMSL_CAMERA_2
+#define GMSL_CAMERA_3
+#include "gmsl-cameras.dtsi"
