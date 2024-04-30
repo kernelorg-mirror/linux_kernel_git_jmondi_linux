@@ -196,6 +196,8 @@ struct max9286_priv {
 	unsigned int mux_channel;
 	bool mux_open;
 
+	bool streaming;
+
 	/* The initial reverse control channel amplitude. */
 	u32 init_rev_chan_mv;
 	u32 rev_chan_mv;
@@ -995,6 +997,8 @@ static int max9286_s_stream(struct v4l2_subdev *sd, int enable)
 		max9286_i2c_mux_close(priv);
 	}
 
+	priv->streaming = !!enable;
+
 err_unlock:
 	v4l2_subdev_unlock_state(state);
 
@@ -1133,6 +1137,19 @@ err_unlock:
 	return ret;
 }
 
+static int max9286_set_routing(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *state,
+			       enum v4l2_subdev_format_whence which,
+			       struct v4l2_subdev_krouting *routing)
+{
+	struct max9286_priv *priv = sd_to_max9286(notifier->sd);
+
+	if (which == V4L2_SUBDEV_FORMAT_ACTIVE && priv->streaming)
+		return -EBUSY;
+
+	return max9286_apply_routing(sd, state, routing);
+}
+
 static const struct v4l2_subdev_video_ops max9286_video_ops = {
 	.s_stream	= max9286_s_stream,
 };
@@ -1145,6 +1162,7 @@ static const struct v4l2_subdev_pad_ops max9286_pad_ops = {
 	.get_frame_interval = v4l2_subdev_get_frame_interval,
 	.set_frame_interval = max9286_set_frame_interval,
 	.get_frame_desc	= max9286_get_frame_desc,
+	.set_routing	= max9286_set_routing,
 };
 
 static const struct v4l2_subdev_ops max9286_subdev_ops = {
@@ -1791,6 +1809,7 @@ static int max9286_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	priv->client = client;
+	priv->streaming = false;
 
 	/* GPIO values default to high */
 	priv->gpio_state = BIT(0) | BIT(1);
