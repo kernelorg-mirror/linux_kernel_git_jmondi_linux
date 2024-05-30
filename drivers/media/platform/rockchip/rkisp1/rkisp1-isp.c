@@ -310,12 +310,16 @@ static int rkisp1_config_isp(struct rkisp1_isp *isp,
 		rkisp1_params_disable(&rkisp1->params);
 	} else {
 		const struct v4l2_mbus_framefmt *src_frm;
+		int ret;
 
 		src_frm = v4l2_subdev_state_get_format(sd_state,
 						       RKISP1_ISP_PAD_SOURCE_VIDEO);
-		rkisp1_params_pre_configure(&rkisp1->params, sink_fmt->bayer_pat,
-					    src_frm->quantization,
-					    src_frm->ycbcr_enc);
+		ret = rkisp1_params_pre_configure(&rkisp1->params,
+						  sink_fmt->bayer_pat,
+						  src_frm->quantization,
+						  src_frm->ycbcr_enc);
+		if (ret)
+			return ret;
 	}
 
 	isp->sink_fmt = sink_fmt;
@@ -458,9 +462,9 @@ static int rkisp1_isp_start(struct rkisp1_isp *isp,
 	src_info = rkisp1_mbus_info_get_by_code(src_fmt->code);
 
 	if (src_info->pixel_enc != V4L2_PIXEL_ENC_BAYER)
-		rkisp1_params_post_configure(&rkisp1->params);
+		ret = rkisp1_params_post_configure(&rkisp1->params);
 
-	return 0;
+	return ret;
 }
 
 /* ----------------------------------------------------------------------------

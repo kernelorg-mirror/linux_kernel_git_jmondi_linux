@@ -591,10 +591,10 @@ const struct rkisp1_mbus_info *rkisp1_mbus_info_get_by_code(u32 mbus_code);
  * It applies the initial ISP parameters from the first params buffer, but
  * skips LSC as it needs to be configured after the ISP is started.
  */
-void rkisp1_params_pre_configure(struct rkisp1_params *params,
-				 enum rkisp1_fmt_raw_pat_type bayer_pat,
-				 enum v4l2_quantization quantization,
-				 enum v4l2_ycbcr_encoding ycbcr_encoding);
+int rkisp1_params_pre_configure(struct rkisp1_params *params,
+				enum rkisp1_fmt_raw_pat_type bayer_pat,
+				enum v4l2_quantization quantization,
+				enum v4l2_ycbcr_encoding ycbcr_encoding);
 
 /*
  * rkisp1_params_post_configure - Configure the params after stream start
@@ -604,7 +604,7 @@ void rkisp1_params_pre_configure(struct rkisp1_params *params,
  * This function is called by the ISP entity just after the ISP gets started.
  * It applies the initial ISP LSC parameters from the first params buffer.
  */
-void rkisp1_params_post_configure(struct rkisp1_params *params);
+int rkisp1_params_post_configure(struct rkisp1_params *params);
 
 /* rkisp1_params_disable - disable all parameters.
  *			   This function is called by the isp entity upon stream start

@@ -2108,10 +2108,10 @@ static const struct rkisp1_cif_isp_afc_config rkisp1_afc_params_default_config =
 	14
 };
 
-void rkisp1_params_pre_configure(struct rkisp1_params *params,
-				 enum rkisp1_fmt_raw_pat_type bayer_pat,
-				 enum v4l2_quantization quantization,
-				 enum v4l2_ycbcr_encoding ycbcr_encoding)
+int rkisp1_params_pre_configure(struct rkisp1_params *params,
+				enum rkisp1_fmt_raw_pat_type bayer_pat,
+				enum v4l2_quantization quantization,
+				enum v4l2_ycbcr_encoding ycbcr_encoding)
 {
 	struct rkisp1_cif_isp_hst_config hst = rkisp1_hst_params_default_config;
 	struct rkisp1_buffer *buf;
@@ -2172,9 +2172,11 @@ void rkisp1_params_pre_configure(struct rkisp1_params *params,
 
 unlock:
 	spin_unlock_irq(&params->config_lock);
+
+	return ret;
 }
 
-void rkisp1_params_post_configure(struct rkisp1_params *params)
+int rkisp1_params_post_configure(struct rkisp1_params *params)
 {
 	struct rkisp1_buffer *buf;
 	int ret = 0;
@@ -2212,6 +2214,8 @@ complete_and_unlock:
 
 unlock:
 	spin_unlock_irq(&params->config_lock);
+
+	return ret;
 }
 
 /*
