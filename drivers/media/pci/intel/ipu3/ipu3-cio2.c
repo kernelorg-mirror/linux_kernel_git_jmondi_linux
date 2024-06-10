@@ -238,9 +238,15 @@ static int cio2_fbpt_init(struct cio2_device *cio2, struct cio2_queue *q)
 	return 0;
 }
 
-static void cio2_fbpt_exit(struct cio2_queue *q, struct device *dev)
+static int cio2_fbpt_exit(struct cio2_queue *q, struct device *dev)
 {
+	if (!q->fbpt)
+		return -ENOENT;
+
 	dma_free_coherent(dev, CIO2_FBPT_SIZE, q->fbpt, q->fbpt_bus_addr);
+	q->fbpt = NULL;
+
+	return 0;
 }
 
 /**************** CSI2 hardware setup ****************/
@@ -1657,13 +1663,16 @@ fail_fbpt:
 
 static void cio2_queue_exit(struct cio2_device *cio2, struct cio2_queue *q)
 {
-	vb2_video_unregister_device(&q->vdev);
 	media_entity_cleanup(&q->vdev.entity);
-	v4l2_device_unregister_subdev(&q->subdev);
 	media_entity_cleanup(&q->subdev.entity);
-	cio2_fbpt_exit(q, &cio2->pci_dev->dev);
-	mutex_destroy(&q->subdev_lock);
-	mutex_destroy(&q->lock);
+	/*
+	 * Note that not all mutexes may have been initialised, destroy only
+	 * those that have.
+	 */
+	if (!cio2_fbpt_exit(q, &cio2->pci_dev->dev)) {
+		mutex_destroy(&q->subdev_lock);
+		mutex_destroy(&q->lock);
+	}
 }
 
 static int cio2_queues_init(struct cio2_device *cio2)
@@ -1673,16 +1682,10 @@ static int cio2_queues_init(struct cio2_device *cio2)
 	for (i = 0; i < CIO2_QUEUES; i++) {
 		r = cio2_queue_init(cio2, &cio2->queue[i]);
 		if (r)
-			break;
+			return r;
 	}
 
-	if (i == CIO2_QUEUES)
-		return 0;
-
-	for (i--; i >= 0; i--)
-		cio2_queue_exit(cio2, &cio2->queue[i]);
-
-	return r;
+	return 0;
 }
 
 static void cio2_queues_exit(struct cio2_device *cio2)
@@ -1693,21 +1696,21 @@ static void cio2_queues_exit(struct cio2_device *cio2)
 		cio2_queue_exit(cio2, &cio2->queue[i]);
 }
 
-static int cio2_check_fwnode_graph(struct fwnode_handle *fwnode)
+static void cio2_media_release(struct media_device *mdev)
 {
-	struct fwnode_handle *endpoint;
+	struct cio2_device *cio2 =
+		container_of(mdev, struct cio2_device, media_dev);
 
-	if (IS_ERR_OR_NULL(fwnode))
-		return -EINVAL;
+	cio2_queues_exit(cio2);
+	cio2_fbpt_exit_dummy(cio2);
+	mutex_destroy(&cio2->lock);
 
-	endpoint = fwnode_graph_get_next_endpoint(fwnode, NULL);
-	if (endpoint) {
-		fwnode_handle_put(endpoint);
-		return 0;
-	}
-
-	return cio2_check_fwnode_graph(fwnode->secondary);
+	kfree(cio2);
 }
+
+static const struct media_device_ops cio2_mdev_ops = {
+	.release = cio2_media_release,
+};
 
 /**************** PCI interface ****************/
 
@@ -1736,7 +1739,7 @@ static int cio2_pci_probe(struct pci_dev *pci_dev,
 			return r;
 	}
 
-	cio2 = devm_kzalloc(dev, sizeof(*cio2), GFP_KERNEL);
+	cio2 = kzalloc(sizeof(*cio2), GFP_KERNEL);
 	if (!cio2)
 		return -ENOMEM;
 	cio2->pci_dev = pci_dev;
@@ -1781,6 +1784,7 @@ static int cio2_pci_probe(struct pci_dev *pci_dev,
 	mutex_init(&cio2->lock);
 
 	cio2->media_dev.dev = dev;
+	cio2->media_dev.ops = &cio2_mdev_ops;
 	strscpy(cio2->media_dev.model, CIO2_DEVICE_NAME,
 		sizeof(cio2->media_dev.model));
 	cio2->media_dev.hw_revision = 0;
@@ -1788,7 +1792,7 @@ static int cio2_pci_probe(struct pci_dev *pci_dev,
 	media_device_init(&cio2->media_dev);
 	r = media_device_register(&cio2->media_dev);
 	if (r < 0)
-		goto fail_mutex_destroy;
+		goto fail_media_device_put;
 
 	cio2->v4l2_dev.mdev = &cio2->media_dev;
 	r = v4l2_device_register(dev, &cio2->v4l2_dev);
@@ -1823,34 +1827,36 @@ static int cio2_pci_probe(struct pci_dev *pci_dev,
 fail_clean_notifier:
 	v4l2_async_nf_unregister(&cio2->notifier);
 	v4l2_async_nf_cleanup(&cio2->notifier);
-	cio2_queues_exit(cio2);
+
 fail_v4l2_device_unregister:
 	v4l2_device_unregister(&cio2->v4l2_dev);
+
 fail_media_device_unregister:
 	media_device_unregister(&cio2->media_dev);
-	media_device_cleanup(&cio2->media_dev);
-fail_mutex_destroy:
-	mutex_destroy(&cio2->lock);
-	cio2_fbpt_exit_dummy(cio2);
 
+fail_media_device_put:
+	media_device_put(&cio2->media_dev);
 	return r;
 }
 
 static void cio2_pci_remove(struct pci_dev *pci_dev)
 {
 	struct cio2_device *cio2 = pci_get_drvdata(pci_dev);
+	unsigned int i;
 
 	media_device_unregister(&cio2->media_dev);
 	v4l2_async_nf_unregister(&cio2->notifier);
 	v4l2_async_nf_cleanup(&cio2->notifier);
-	cio2_queues_exit(cio2);
-	cio2_fbpt_exit_dummy(cio2);
+	for (i = 0; i < CIO2_QUEUES; i++) {
+		vb2_video_unregister_device(&cio2->queue[i].vdev);
+		v4l2_device_unregister_subdev(&cio2->queue[i].subdev);
+	}
 	v4l2_device_unregister(&cio2->v4l2_dev);
-	media_device_cleanup(&cio2->media_dev);
-	mutex_destroy(&cio2->lock);
 
 	pm_runtime_forbid(&pci_dev->dev);
 	pm_runtime_get_noresume(&pci_dev->dev);
+
+	media_device_put(&cio2->media_dev);
 }
 
 static int __maybe_unused cio2_runtime_suspend(struct device *dev)
