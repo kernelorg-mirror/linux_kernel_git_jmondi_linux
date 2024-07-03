@@ -640,6 +640,9 @@ void rkisp1_params_post_configure(struct rkisp1_params *params);
  */
 void rkisp1_params_disable(struct rkisp1_params *params);
 
+void rkisp1_bls_swap_regs(enum rkisp1_fmt_raw_pat_type pattern,
+			  const u32 input[4], u32 output[4]);
+
 /* irq handlers */
 irqreturn_t rkisp1_isp_isr(int irq, void *ctx);
 irqreturn_t rkisp1_csi_isr(int irq, void *ctx);
