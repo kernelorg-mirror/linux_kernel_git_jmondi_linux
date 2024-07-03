@@ -1845,6 +1845,7 @@ static const struct rkisp1_ext_params_handler {
 	size_t size;
 	rkisp1_block_handler handler;
 	unsigned int group;
+	unsigned int features;
 } rkisp1_ext_params_handlers[] = {
 	[RKISP1_EXT_PARAMS_BLOCK_TYPE_BLS] = {
 		.size		= sizeof(struct rkisp1_ext_params_bls_config),
@@ -1954,6 +1955,10 @@ static void rkisp1_ext_params_config(struct rkisp1_params *params,
 		/* Make sure the block is in the list of groups to configure. */
 		block_handler = &rkisp1_ext_params_handlers[block->header.type];
 		if (!(block_handler->group & block_group_mask))
+			continue;
+
+		if ((block_handler->features & params->rkisp1->info->features) !=
+		    params->rkisp1->info->features)
 			continue;
 
 		block_handler->handler(params, block);
