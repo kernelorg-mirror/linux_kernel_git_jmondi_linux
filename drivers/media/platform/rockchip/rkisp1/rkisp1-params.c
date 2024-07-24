@@ -1786,9 +1786,12 @@ rkisp1_ext_params_goc(struct rkisp1_params *params,
 
 	params->ops->goc_config(params, &goc->config);
 
-	if (!(params->enabled_blocks & BIT(RKISP1_EXT_PARAMS_BLOCK_TYPE_GOC)))
-		rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
-				      RKISP1_CIF_ISP_CTRL_ISP_GAMMA_OUT_ENA);
+	/*
+	 * Unconditionally re-enable the GOC module which gets disabled by
+	 * goc_config().
+	 */
+	rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
+			      RKISP1_CIF_ISP_CTRL_ISP_GAMMA_OUT_ENA);
 }
 
 static void
