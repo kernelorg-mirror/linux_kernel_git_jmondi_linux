@@ -95,6 +95,7 @@ int v4l2_fh_release(struct file *filp)
 	if (fh) {
 		v4l2_fh_del(fh);
 		v4l2_fh_exit(fh);
+		kfree(fh->context);
 		kfree(fh);
 		filp->private_data = NULL;
 	}

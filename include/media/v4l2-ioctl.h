@@ -18,6 +18,7 @@
 #include <linux/videodev2.h>
 
 struct v4l2_fh;
+struct video_device_context;
 
 /**
  * struct v4l2_ioctl_ops - describe operations for each V4L2 ioctl
@@ -405,6 +406,10 @@ struct v4l2_ioctl_ops {
 				       struct v4l2_format *f);
 	int (*vidioc_try_fmt_meta_out)(struct file *file, void *fh,
 				       struct v4l2_format *f);
+
+	/* Context handlers */
+	int (*vidioc_bind_context)(struct file *file, void *fh,
+				   struct video_device_context *c);
 
 	/* Buffer handlers */
 	int (*vidioc_reqbufs)(struct file *file, void *fh,

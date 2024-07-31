@@ -150,6 +150,7 @@ EXPORT_SYMBOL(video_device_alloc);
 
 void video_device_release(struct video_device *vdev)
 {
+	kfree(vdev->contexts);
 	kfree(vdev);
 }
 EXPORT_SYMBOL(video_device_release);
@@ -628,6 +629,8 @@ static void determine_valid_ioctls(struct video_device *vdev)
 		__set_bit(_IOC_NR(VIDIOC_ENUM_FREQ_BANDS), valid_ioctls);
 
 	if (is_vid) {
+		__set_bit(_IOC_NR(VIDIOC_BIND_CONTEXT), valid_ioctls);
+
 		/* video specific ioctls */
 		if ((is_rx && (ops->vidioc_enum_fmt_vid_cap ||
 			       ops->vidioc_enum_fmt_vid_overlay)) ||
@@ -681,12 +684,14 @@ static void determine_valid_ioctls(struct video_device *vdev)
 		SET_VALID_IOCTL(ops, VIDIOC_G_FMT, vidioc_g_fmt_meta_cap);
 		SET_VALID_IOCTL(ops, VIDIOC_S_FMT, vidioc_s_fmt_meta_cap);
 		SET_VALID_IOCTL(ops, VIDIOC_TRY_FMT, vidioc_try_fmt_meta_cap);
+		__set_bit(_IOC_NR(VIDIOC_BIND_CONTEXT), valid_ioctls);
 	} else if (is_meta && is_tx) {
 		/* metadata output specific ioctls */
 		SET_VALID_IOCTL(ops, VIDIOC_ENUM_FMT, vidioc_enum_fmt_meta_out);
 		SET_VALID_IOCTL(ops, VIDIOC_G_FMT, vidioc_g_fmt_meta_out);
 		SET_VALID_IOCTL(ops, VIDIOC_S_FMT, vidioc_s_fmt_meta_out);
 		SET_VALID_IOCTL(ops, VIDIOC_TRY_FMT, vidioc_try_fmt_meta_out);
+		__set_bit(_IOC_NR(VIDIOC_BIND_CONTEXT), valid_ioctls);
 	}
 	if (is_vbi) {
 		/* vbi specific ioctls */
@@ -1125,6 +1130,12 @@ void video_unregister_device(struct video_device *vdev)
 	/* This must be in a critical section to prevent a race with v4l2_open.
 	 * Once this bit has been cleared video_get may never be called again.
 	 */
+
+	/* Release context maps. */
+	kfree(vdev->contexts);
+	vdev->contexts = NULL;
+	vdev->num_contexts = 0;
+
 	clear_bit(V4L2_FL_REGISTERED, &vdev->flags);
 	mutex_unlock(&videodev_lock);
 	if (test_bit(V4L2_FL_USES_V4L2_FH, &vdev->flags))

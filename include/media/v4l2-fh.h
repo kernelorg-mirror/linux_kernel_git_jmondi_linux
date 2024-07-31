@@ -19,6 +19,7 @@
 #include <linux/videodev2.h>
 
 struct video_device;
+struct video_device_context;
 struct v4l2_ctrl_handler;
 
 /**
@@ -54,6 +55,7 @@ struct v4l2_fh {
 	u32			sequence;
 
 	struct v4l2_m2m_ctx	*m2m_ctx;
+	struct video_device_context *context;
 };
 
 /**

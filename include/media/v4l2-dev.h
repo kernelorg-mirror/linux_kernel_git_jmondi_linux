@@ -223,14 +223,25 @@ struct v4l2_file_operations {
 
 struct video_device_context {
 	struct media_device_context *mdev_context;
+	struct video_device *vfd;
 
 	struct mutex queue_lock;
 	struct vb2_queue queue;
 };
 
+inline struct video_device_context *vdev_context_from_queue(struct vb2_queue *q)
+{
+	return container_of(q, struct video_device_context, queue);
+}
+
 struct video_device_context_map {
 	struct media_device_context *mdev_context;
 	struct video_device_context *vdev_context;
+};
+
+struct video_device_context_info {
+	size_t size;
+	unsigned int max_contexts;
 };
 
 struct video_device_context *vdev_context(struct video_device *vdev,
@@ -298,6 +309,7 @@ struct video_device {
 
 	struct vb2_queue *queue;
 
+	struct video_device_context_info context_info;
 	struct video_device_context_map *contexts;
 	unsigned int num_contexts;
 

@@ -1036,6 +1036,14 @@ struct v4l2_jpegcompression {
 };
 
 /*
+ *     V I D E O   D E V I C E  C O N T E X T
+ */
+
+struct v4l2_context {
+	__u64 context_fd;
+};
+
+/*
  *	M E M O R Y - M A P P I N G   B U F F E R S
  */
 
@@ -2757,6 +2765,9 @@ struct v4l2_create_buffers {
 #define VIDIOC_DBG_G_CHIP_INFO  _IOWR('V', 102, struct v4l2_dbg_chip_info)
 
 #define VIDIOC_QUERY_EXT_CTRL	_IOWR('V', 103, struct v4l2_query_ext_ctrl)
+
+/* Context handling */
+#define VIDIOC_BIND_CONTEXT	_IOW('V', 104, struct v4l2_context)
 
 /* Reminder: when adding new ioctls please add support for them to
    drivers/media/v4l2-core/v4l2-compat-ioctl32.c as well! */
