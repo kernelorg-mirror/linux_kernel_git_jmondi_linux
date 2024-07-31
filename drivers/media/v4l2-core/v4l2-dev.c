@@ -221,6 +221,9 @@ static void v4l2_device_release(struct device *cd)
 		media_device_put(mdev);
 #endif
 
+	mutex_destroy(&vdev->contexts_mutex);
+	vdev->num_contexts = 0;
+
 	/* Release video_device and perform other cleanups as needed. */
 	vdev->release(vdev);
 
@@ -1086,6 +1089,10 @@ int __video_register_device(struct video_device *vdev,
 	/* Part 5: Register the entity. */
 	ret = video_register_media_controller(vdev);
 
+	vdev->num_contexts = 0;
+	INIT_LIST_HEAD(&vdev->contexts);
+	mutex_init(&vdev->contexts_mutex);
+
 	/* Part 6: Activate this minor. The char device can now be used. */
 	set_bit(V4L2_FL_REGISTERED, &vdev->flags);
 	mutex_unlock(&videodev_lock);
@@ -1094,6 +1101,7 @@ int __video_register_device(struct video_device *vdev,
 
 cleanup:
 	mutex_lock(&videodev_lock);
+	mutex_destroy(&vdev->contexts_mutex);
 	if (vdev->cdev)
 		cdev_del(vdev->cdev);
 	video_devices[vdev->minor] = NULL;
@@ -1119,6 +1127,7 @@ void video_unregister_device(struct video_device *vdev)
 		return;
 
 	mutex_lock(&videodev_lock);
+
 	/* This must be in a critical section to prevent a race with v4l2_open.
 	 * Once this bit has been cleared video_get may never be called again.
 	 */
@@ -1129,6 +1138,26 @@ void video_unregister_device(struct video_device *vdev)
 	device_unregister(&vdev->dev);
 }
 EXPORT_SYMBOL(video_unregister_device);
+
+struct video_device_context *vdev_context(struct video_device *vdev,
+					  struct media_device_context *mdev_context)
+{
+	struct video_device_context *c = NULL;
+	struct video_device_context_map *map;
+
+	mutex_lock(&vdev->contexts_mutex);
+	list_for_each_entry(map, &vdev->contexts, list) {
+		if (map->mdev_context != mdev_context)
+			continue;
+
+		c = map->vdev_context;
+		break;
+	}
+	mutex_unlock(&vdev->contexts_mutex);
+
+	return c;
+}
+EXPORT_SYMBOL_GPL(vdev_context);
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 
