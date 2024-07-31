@@ -4,6 +4,7 @@
  * Copyright (c) 2021-2024 Raspberry Pi Limited.
  *
  */
+
 #include <linux/clk.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -27,6 +28,7 @@
 /* Maximum number of config buffers possible */
 #define PISP_BE_NUM_CONFIG_BUFFERS VB2_MAX_FRAME
 
+#define PISPBE_NUM_CONTEXTS	2
 #define PISPBE_NAME "pispbe"
 
 /* Some ISP-BE registers */
@@ -151,6 +153,37 @@ static const struct pispbe_node_description node_desc[PISPBE_NUM_NODES] = {
  * Structure to describe a single node /dev/video<N> which represents a single
  * input or output queue to the PiSP Back End device.
  */
+struct pispbe_node;
+struct pispbe_context {
+	struct video_device_context vdev_context;
+
+	/* Protect pispbe_node->ready_queue and pispbe_buffer->ready_list */
+	spinlock_t ready_lock;
+	struct list_head ready_queue;
+	struct v4l2_format format;
+	const struct pisp_be_format *pisp_format;
+	struct pispbe_dev *pispbe;
+	struct pispbe_node *node;
+};
+
+static struct pispbe_context *pispbe_context_from_queue(struct vb2_queue *queue)
+{
+	return (struct pispbe_context *)vdev_context_from_queue(queue);
+}
+
+static struct pispbe_context *pispbe_context_from_file(struct file *file,
+						       struct video_device *vfd)
+{
+	return (struct pispbe_context *)vdev_context_from_file(file, vfd);
+}
+
+static struct pispbe_context *
+pispbe_vdev_context(struct video_device *vdev,
+		    struct media_device_context *mdev_context)
+{
+	return (struct pispbe_context *)vdev_context(vdev, mdev_context);
+}
+
 struct pispbe_node {
 	unsigned int id;
 	int vfl_dir;
@@ -162,14 +195,6 @@ struct pispbe_node {
 	struct pispbe_dev *pispbe;
 	/* Video device lock */
 	struct mutex node_lock;
-	/* vb2_queue lock */
-	struct mutex queue_lock;
-	/* Protect pispbe_node->ready_queue and pispbe_buffer->ready_list */
-	spinlock_t ready_lock;
-	struct list_head ready_queue;
-	struct vb2_queue queue;
-	struct v4l2_format format;
-	const struct pisp_be_format *pisp_format;
 };
 
 /* For logging only, use the entity name with "pispbe" and separator removed */
@@ -306,30 +331,30 @@ struct pispbe_buffer {
 };
 
 static int pispbe_get_planes_addr(dma_addr_t addr[3], struct pispbe_buffer *buf,
-				  struct pispbe_node *node)
+				  struct pispbe_context *context)
 {
-	unsigned int num_planes = node->format.fmt.pix_mp.num_planes;
+	unsigned int num_planes = context->format.fmt.pix_mp.num_planes;
 	unsigned int plane_factor = 0;
 	unsigned int size;
 	unsigned int p;
 
-	if (!buf || !node->pisp_format)
+	if (!buf || !context->pisp_format)
 		return 0;
 
 	/*
 	 * Determine the base plane size. This will not be the same
-	 * as node->format.fmt.pix_mp.plane_fmt[0].sizeimage for a single
+	 * as context->format.fmt.pix_mp.plane_fmt[0].sizeimage for a single
 	 * plane buffer in an mplane format.
 	 */
-	size = node->format.fmt.pix_mp.plane_fmt[0].bytesperline *
-	       node->format.fmt.pix_mp.height;
+	size = context->format.fmt.pix_mp.plane_fmt[0].bytesperline *
+	       context->format.fmt.pix_mp.height;
 
 	for (p = 0; p < num_planes && p < PISPBE_MAX_PLANES; p++) {
 		addr[p] = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, p);
-		plane_factor += node->pisp_format->plane_factor[p];
+		plane_factor += context->pisp_format->plane_factor[p];
 	}
 
-	for (; p < PISPBE_MAX_PLANES && node->pisp_format->plane_factor[p]; p++) {
+	for (; p < PISPBE_MAX_PLANES && context->pisp_format->plane_factor[p]; p++) {
 		/*
 		 * Calculate the address offset of this plane as needed
 		 * by the hardware. This is specifically for non-mplane
@@ -337,7 +362,7 @@ static int pispbe_get_planes_addr(dma_addr_t addr[3], struct pispbe_buffer *buf,
 		 * for the V4L2_PIX_FMT_YUV420 format.
 		 */
 		addr[p] = addr[0] + ((size * plane_factor) >> 3);
-		plane_factor += node->pisp_format->plane_factor[p];
+		plane_factor += context->pisp_format->plane_factor[p];
 	}
 
 	return num_planes;
@@ -352,12 +377,16 @@ static dma_addr_t pispbe_get_addr(struct pispbe_buffer *buf)
 }
 
 static void pispbe_xlate_addrs(struct pispbe_dev *pispbe,
+			       struct pispbe_context *config_context,
 			       struct pispbe_job_descriptor *job,
 			       struct pispbe_buffer *buf[PISPBE_NUM_NODES])
 {
+	struct media_device_context *mdev_context =
+		config_context->vdev_context.mdev_context;
 	struct pispbe_hw_enables *hw_en = &job->hw_enables;
 	struct pisp_be_tiles_config *config = job->config;
 	dma_addr_t *addrs = job->hw_dma_addrs;
+	struct pispbe_context *context;
 	int ret;
 
 	/* Take a copy of the "enable" bitmaps so we can modify them. */
@@ -368,8 +397,9 @@ static void pispbe_xlate_addrs(struct pispbe_dev *pispbe,
 	 * Main input first. There are 3 address pointers, corresponding to up
 	 * to 3 planes.
 	 */
-	ret = pispbe_get_planes_addr(addrs, buf[MAIN_INPUT_NODE],
-				     &pispbe->node[MAIN_INPUT_NODE]);
+	context = pispbe_vdev_context(&pispbe->node[MAIN_INPUT_NODE].vfd,
+				      mdev_context);
+	ret = pispbe_get_planes_addr(addrs, buf[MAIN_INPUT_NODE], context);
 	if (ret <= 0) {
 		/*
 		 * This shouldn't happen; pispbe_schedule_internal should insist
@@ -426,11 +456,13 @@ static void pispbe_xlate_addrs(struct pispbe_dev *pispbe,
 		hw_en->bayer_enables = 0;
 	}
 
+
 	/* Main image output channels. */
 	for (unsigned int i = 0; i < PISP_BACK_END_NUM_OUTPUTS; i++) {
+		context = pispbe_vdev_context(&pispbe->node[OUTPUT0_NODE + i].vfd,
+					      mdev_context);
 		ret = pispbe_get_planes_addr(addrs + 7 + 3 * i,
-					     buf[OUTPUT0_NODE + i],
-					     &pispbe->node[OUTPUT0_NODE + i]);
+				     buf[OUTPUT0_NODE + i], context);
 		if (ret <= 0)
 			hw_en->rgb_enables &= ~(PISP_BE_RGB_ENABLE_OUTPUT0 << i);
 	}
@@ -451,11 +483,13 @@ static void pispbe_xlate_addrs(struct pispbe_dev *pispbe,
  * Returns 0 if a job has been successfully prepared, < 0 otherwise.
  */
 static int pispbe_prepare_job(struct pispbe_dev *pispbe,
+			      struct pispbe_context *config_context,
 			      struct pispbe_job_descriptor *job)
 {
+	struct media_device_context *mdev_context =
+		config_context->vdev_context.mdev_context;
 	struct pispbe_buffer *buf[PISPBE_NUM_NODES] = {};
 	unsigned int config_index;
-	struct pispbe_node *node;
 	unsigned long flags;
 
 	lockdep_assert_held(&pispbe->hw_lock);
@@ -467,16 +501,15 @@ static int pispbe_prepare_job(struct pispbe_dev *pispbe,
 			(BIT(CONFIG_NODE) | BIT(MAIN_INPUT_NODE)))
 		return -ENODEV;
 
-	node = &pispbe->node[CONFIG_NODE];
-	spin_lock_irqsave(&node->ready_lock, flags);
-	buf[CONFIG_NODE] = list_first_entry_or_null(&node->ready_queue,
+	spin_lock_irqsave(&config_context->ready_lock, flags);
+	buf[CONFIG_NODE] = list_first_entry_or_null(&config_context->ready_queue,
 						    struct pispbe_buffer,
 						    ready_list);
 	if (buf[CONFIG_NODE]) {
 		list_del(&buf[CONFIG_NODE]->ready_list);
 		pispbe->queued_job.buf[CONFIG_NODE] = buf[CONFIG_NODE];
 	}
-	spin_unlock_irqrestore(&node->ready_lock, flags);
+	spin_unlock_irqrestore(&config_context->ready_lock, flags);
 
 	/* Exit early if no config buffer has been queued. */
 	if (!buf[CONFIG_NODE])
@@ -495,6 +528,7 @@ static int pispbe_prepare_job(struct pispbe_dev *pispbe,
 		unsigned int rgb_en =
 			job->config->config.global.rgb_enables;
 		bool ignore_buffers = false;
+		struct pispbe_context *context;
 
 		/* Config node is handled outside the loop above. */
 		if (i == CONFIG_NODE)
@@ -525,18 +559,19 @@ static int pispbe_prepare_job(struct pispbe_dev *pispbe,
 			ignore_buffers = true;
 		}
 
-		node = &pispbe->node[i];
+		context = pispbe_vdev_context(&pispbe->node[i].vfd,
+					      mdev_context);
 
 		/* Pull a buffer from each V4L2 queue to form the queued job */
-		spin_lock_irqsave(&node->ready_lock, flags);
-		buf[i] = list_first_entry_or_null(&node->ready_queue,
+		spin_lock_irqsave(&context->ready_lock, flags);
+		buf[i] = list_first_entry_or_null(&context->ready_queue,
 						  struct pispbe_buffer,
 						  ready_list);
 		if (buf[i]) {
 			list_del(&buf[i]->ready_list);
 			pispbe->queued_job.buf[i] = buf[i];
 		}
-		spin_unlock_irqrestore(&node->ready_lock, flags);
+		spin_unlock_irqrestore(&context->ready_lock, flags);
 
 		if (!buf[i] && !ignore_buffers)
 			goto err_return_buffers;
@@ -545,21 +580,24 @@ static int pispbe_prepare_job(struct pispbe_dev *pispbe,
 	pispbe->queued_job.valid = true;
 
 	/* Convert buffers to DMA addresses for the hardware */
-	pispbe_xlate_addrs(pispbe, job, buf);
+	pispbe_xlate_addrs(pispbe, config_context, job, buf);
 
 	return 0;
 
 err_return_buffers:
 	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
-		struct pispbe_node *n =  &pispbe->node[i];
+		struct pispbe_context *context;
 
 		if (!buf[i])
 			continue;
 
 		/* Return the buffer to the ready_list queue */
-		spin_lock_irqsave(&n->ready_lock, flags);
-		list_add(&buf[i]->ready_list, &n->ready_queue);
-		spin_unlock_irqrestore(&n->ready_lock, flags);
+		context = pispbe_vdev_context(&pispbe->node[i].vfd,
+					      mdev_context);
+
+		spin_lock_irqsave(&context->ready_lock, flags);
+		list_add(&buf[i]->ready_list, &context->ready_queue);
+		spin_unlock_irqrestore(&context->ready_lock, flags);
 	}
 
 	memset(&pispbe->queued_job, 0, sizeof(pispbe->queued_job));
@@ -567,11 +605,13 @@ err_return_buffers:
 	return -ENODEV;
 }
 
-static void pispbe_schedule(struct pispbe_dev *pispbe, bool clear_hw_busy)
+static void pispbe_schedule(struct pispbe_dev *pispbe,
+			    struct pispbe_context *context,
+			    bool clear_hw_busy)
 {
+	struct video_device *config_vfd = &pispbe->node[CONFIG_NODE].vfd;
 	struct pispbe_job_descriptor job;
 	unsigned long flags;
-	int ret;
 
 	spin_lock_irqsave(&pispbe->hw_lock, flags);
 
@@ -581,40 +621,61 @@ static void pispbe_schedule(struct pispbe_dev *pispbe, bool clear_hw_busy)
 	if (pispbe->hw_busy)
 		goto unlock_and_return;
 
-	ret = pispbe_prepare_job(pispbe, &job);
-	if (ret)
-		goto unlock_and_return;
-
 	/*
-	 * We can kick the job off without the hw_lock, as this can
-	 * never run again until hw_busy is cleared, which will happen
-	 * only when the following job has been queued and an interrupt
-	 * is rised.
+	 * Iterate contexts on the CONFIG video device and find one that
+	 * belongs to the same media device context, if any.
 	 */
-	pispbe->hw_busy = true;
-	spin_unlock_irqrestore(&pispbe->hw_lock, flags);
+	for (unsigned int c = 0; c < config_vfd->num_contexts; ++c) {
+		struct video_device_context_map *map = &config_vfd->contexts[c];
+		struct pispbe_context *config_context;
+		int ret;
 
-	if (job.config->num_tiles <= 0 ||
-	    job.config->num_tiles > PISP_BACK_END_NUM_TILES ||
-	    !((job.hw_enables.bayer_enables | job.hw_enables.rgb_enables) &
-	      PISP_BE_BAYER_ENABLE_INPUT)) {
+		/* Schedule jobs only for a specific group. */
+		if (context &&
+		    context->vdev_context.mdev_context != map->mdev_context)
+			continue;
+
+		config_context = (struct pispbe_context *)map->vdev_context;
+
 		/*
-		 * Bad job. We can't let it proceed as it could lock up
-		 * the hardware, or worse!
-		 *
-		 * For now, just force num_tiles to 0, which causes the
-		 * H/W to do something bizarre but survivable. It
-		 * increments (started,done) counters by more than 1,
-		 * but we seem to survive...
+		 * Prepare a job for a context, if the context is not
+		 * ready continue and try with the next one.
 		 */
-		dev_dbg(pispbe->dev, "Bad job: invalid number of tiles: %u\n",
-			job.config->num_tiles);
-		job.config->num_tiles = 0;
+		ret = pispbe_prepare_job(pispbe, config_context, &job);
+		if (ret)
+			continue;
+
+		/*
+		 * We can kick the job off without the hw_lock, as this can
+		 * never run again until hw_busy is cleared, which will happen
+		 * only when the following job has been queued and an interrupt
+		 * is rised.
+		 */
+		pispbe->hw_busy = true;
+		spin_unlock_irqrestore(&pispbe->hw_lock, flags);
+
+		if (job.config->num_tiles <= 0 ||
+		    job.config->num_tiles > PISP_BACK_END_NUM_TILES ||
+		    !((job.hw_enables.bayer_enables | job.hw_enables.rgb_enables) &
+		      PISP_BE_BAYER_ENABLE_INPUT)) {
+			/*
+			 * Bad job. We can't let it proceed as it could lock up
+			 * the hardware, or worse!
+			 *
+			 * For now, just force num_tiles to 0, which causes the
+			 * H/W to do something bizarre but survivable. It
+			 * increments (started,done) counters by more than 1,
+			 * but we seem to survive...
+			 */
+			dev_dbg(pispbe->dev, "Bad job: invalid number of tiles: %u\n",
+				job.config->num_tiles);
+			job.config->num_tiles = 0;
+		}
+
+		pispbe_queue_job(pispbe, &job);
+
+		return;
 	}
-
-	pispbe_queue_job(pispbe, &job);
-
-	return;
 
 unlock_and_return:
 	/* No job has been queued, just release the lock and return. */
@@ -689,18 +750,22 @@ static irqreturn_t pispbe_isr(int irq, void *dev)
 	}
 
 	/* check if there's more to do before going to sleep */
-	pispbe_schedule(pispbe, can_queue_another);
+	pispbe_schedule(pispbe, NULL, can_queue_another);
 
 	return IRQ_HANDLED;
 }
 
 static int pisp_be_validate_config(struct pispbe_dev *pispbe,
+				   struct pispbe_context *config_context,
 				   struct pisp_be_tiles_config *config)
 {
+	struct media_device_context *mdev_context =
+		config_context->vdev_context.mdev_context;
 	u32 bayer_enables = config->config.global.bayer_enables;
 	u32 rgb_enables = config->config.global.rgb_enables;
+	struct v4l2_pix_format_mplane *mp;
 	struct device *dev = pispbe->dev;
-	struct v4l2_format *fmt;
+	struct pispbe_context *context;
 	unsigned int bpl, size;
 
 	if (!(bayer_enables & PISP_BE_BAYER_ENABLE_INPUT) ==
@@ -710,36 +775,50 @@ static int pisp_be_validate_config(struct pispbe_dev *pispbe,
 	}
 
 	/* Ensure output config strides and buffer sizes match the V4L2 formats. */
-	fmt = &pispbe->node[TDN_OUTPUT_NODE].format;
+	context = pispbe_vdev_context(&pispbe->node[TDN_OUTPUT_NODE].vfd,
+				      mdev_context);
+	if (!context) {
+		dev_dbg(dev, "Context not initialized for TDN output node\n");
+		return -EINVAL;
+	}
+
+	mp = &context->format.fmt.pix_mp;
 	if (bayer_enables & PISP_BE_BAYER_ENABLE_TDN_OUTPUT) {
 		bpl = config->config.tdn_output_format.stride;
 		size = bpl * config->config.tdn_output_format.height;
 
-		if (fmt->fmt.pix_mp.plane_fmt[0].bytesperline < bpl) {
+		if (mp->plane_fmt[0].bytesperline < bpl) {
 			dev_dbg(dev, "%s: bpl mismatch on tdn_output\n",
 				__func__);
 			return -EINVAL;
 		}
 
-		if (fmt->fmt.pix_mp.plane_fmt[0].sizeimage < size) {
+		if (mp->plane_fmt[0].sizeimage < size) {
 			dev_dbg(dev, "%s: size mismatch on tdn_output\n",
 				__func__);
 			return -EINVAL;
 		}
 	}
 
-	fmt = &pispbe->node[STITCH_OUTPUT_NODE].format;
+	context = pispbe_vdev_context(&pispbe->node[STITCH_OUTPUT_NODE].vfd,
+				      mdev_context);
+	if (!context) {
+		dev_dbg(dev, "Context not initialized for STITCH output node\n");
+		return -EINVAL;
+	}
+
+	mp = &context->format.fmt.pix_mp;
 	if (bayer_enables & PISP_BE_BAYER_ENABLE_STITCH_OUTPUT) {
 		bpl = config->config.stitch_output_format.stride;
 		size = bpl * config->config.stitch_output_format.height;
 
-		if (fmt->fmt.pix_mp.plane_fmt[0].bytesperline < bpl) {
+		if (mp->plane_fmt[0].bytesperline < bpl) {
 			dev_dbg(dev, "%s: bpl mismatch on stitch_output\n",
 				__func__);
 			return -EINVAL;
 		}
 
-		if (fmt->fmt.pix_mp.plane_fmt[0].sizeimage < size) {
+		if (mp->plane_fmt[0].sizeimage < size) {
 			dev_dbg(dev, "%s: size mismatch on stitch_output\n",
 				__func__);
 			return -EINVAL;
@@ -754,8 +833,16 @@ static int pisp_be_validate_config(struct pispbe_dev *pispbe,
 		    PISP_IMAGE_FORMAT_WALLPAPER_ROLL)
 			continue; /* TODO: Size checks for wallpaper formats */
 
-		fmt = &pispbe->node[OUTPUT0_NODE + j].format;
-		for (unsigned int i = 0; i < fmt->fmt.pix_mp.num_planes; i++) {
+		context = pispbe_vdev_context(&pispbe->node[OUTPUT0_NODE + j].vfd,
+					      mdev_context);
+		if (!context) {
+			dev_dbg(dev,
+				"Context not initialized for OUTPUT %u node\n",j);
+			return -EINVAL;
+		}
+
+		mp = &context->format.fmt.pix_mp;
+		for (unsigned int i = 0; i < mp->num_planes; i++) {
 			bpl = !i ? config->config.output_format[j].image.stride
 			    : config->config.output_format[j].image.stride2;
 			size = bpl * config->config.output_format[j].image.height;
@@ -764,13 +851,15 @@ static int pisp_be_validate_config(struct pispbe_dev *pispbe,
 						PISP_IMAGE_FORMAT_SAMPLING_420)
 				size >>= 1;
 
-			if (fmt->fmt.pix_mp.plane_fmt[i].bytesperline < bpl) {
+			if (mp->plane_fmt[i].bytesperline < bpl) {
 				dev_dbg(dev, "%s: bpl mismatch on output %d\n",
 					__func__, j);
+				dev_dbg(dev, "Expected %u, got %u\n",
+					bpl, mp->plane_fmt[i].bytesperline);
 				return -EINVAL;
 			}
 
-			if (fmt->fmt.pix_mp.plane_fmt[i].sizeimage < size) {
+			if (mp->plane_fmt[i].sizeimage < size) {
 				dev_dbg(dev, "%s: size mismatch on output\n",
 					__func__);
 				return -EINVAL;
@@ -785,10 +874,11 @@ static int pispbe_node_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 				   unsigned int *nplanes, unsigned int sizes[],
 				   struct device *alloc_devs[])
 {
+	struct pispbe_context *context = pispbe_context_from_queue(q);
 	struct pispbe_node *node = vb2_get_drv_priv(q);
 	struct pispbe_dev *pispbe = node->pispbe;
 	unsigned int num_planes = NODE_IS_MPLANE(node) ?
-				  node->format.fmt.pix_mp.num_planes : 1;
+				  context->format.fmt.pix_mp.num_planes : 1;
 
 	if (*nplanes) {
 		if (*nplanes != num_planes)
@@ -796,8 +886,8 @@ static int pispbe_node_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 
 		for (unsigned int i = 0; i < *nplanes; i++) {
 			unsigned int size = NODE_IS_MPLANE(node) ?
-				node->format.fmt.pix_mp.plane_fmt[i].sizeimage :
-				node->format.fmt.meta.buffersize;
+				context->format.fmt.pix_mp.plane_fmt[i].sizeimage :
+				context->format.fmt.meta.buffersize;
 
 			if (sizes[i] < size)
 				return -EINVAL;
@@ -809,8 +899,8 @@ static int pispbe_node_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 	*nplanes = num_planes;
 	for (unsigned int i = 0; i < *nplanes; i++) {
 		unsigned int size = NODE_IS_MPLANE(node) ?
-				node->format.fmt.pix_mp.plane_fmt[i].sizeimage :
-				node->format.fmt.meta.buffersize;
+				context->format.fmt.pix_mp.plane_fmt[i].sizeimage :
+				context->format.fmt.meta.buffersize;
 		sizes[i] = size;
 	}
 
@@ -823,15 +913,17 @@ static int pispbe_node_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 
 static int pispbe_node_buffer_prepare(struct vb2_buffer *vb)
 {
-	struct pispbe_node *node = vb2_get_drv_priv(vb->vb2_queue);
+	struct vb2_queue *q = vb->vb2_queue;
+	struct pispbe_context *context = pispbe_context_from_queue(q);
+	struct pispbe_node *node = context->node;
 	struct pispbe_dev *pispbe = node->pispbe;
 	unsigned int num_planes = NODE_IS_MPLANE(node) ?
-				  node->format.fmt.pix_mp.num_planes : 1;
+				  context->format.fmt.pix_mp.num_planes : 1;
 
 	for (unsigned int i = 0; i < num_planes; i++) {
 		unsigned long size = NODE_IS_MPLANE(node) ?
-				node->format.fmt.pix_mp.plane_fmt[i].sizeimage :
-				node->format.fmt.meta.buffersize;
+				context->format.fmt.pix_mp.plane_fmt[i].sizeimage :
+				context->format.fmt.meta.buffersize;
 
 		if (vb2_plane_size(vb, i) < size) {
 			dev_dbg(pispbe->dev,
@@ -849,7 +941,7 @@ static int pispbe_node_buffer_prepare(struct vb2_buffer *vb)
 
 		memcpy(dst, src, sizeof(struct pisp_be_tiles_config));
 
-		return pisp_be_validate_config(pispbe, dst);
+		return pisp_be_validate_config(pispbe, context, dst);
 	}
 
 	return 0;
@@ -861,25 +953,28 @@ static void pispbe_node_buffer_queue(struct vb2_buffer *buf)
 		container_of(buf, struct vb2_v4l2_buffer, vb2_buf);
 	struct pispbe_buffer *buffer =
 		container_of(vbuf, struct pispbe_buffer, vb);
-	struct pispbe_node *node = vb2_get_drv_priv(buf->vb2_queue);
+	struct vb2_queue *q = buf->vb2_queue;
+	struct pispbe_context *context = pispbe_context_from_queue(q);
+	struct pispbe_node *node = context->node;
 	struct pispbe_dev *pispbe = node->pispbe;
 	unsigned long flags;
 
 	dev_dbg(pispbe->dev, "%s: for node %s\n", __func__, NODE_NAME(node));
-	spin_lock_irqsave(&node->ready_lock, flags);
-	list_add_tail(&buffer->ready_list, &node->ready_queue);
-	spin_unlock_irqrestore(&node->ready_lock, flags);
+	spin_lock_irqsave(&context->ready_lock, flags);
+	list_add_tail(&buffer->ready_list, &context->ready_queue);
+	spin_unlock_irqrestore(&context->ready_lock, flags);
 
 	/*
 	 * Every time we add a buffer, check if there's now some work for the hw
 	 * to do.
 	 */
-	pispbe_schedule(pispbe, false);
+	pispbe_schedule(pispbe, context, false);
 }
 
 static int pispbe_node_start_streaming(struct vb2_queue *q, unsigned int count)
 {
-	struct pispbe_node *node = vb2_get_drv_priv(q);
+	struct pispbe_context *context = pispbe_context_from_queue(q);
+	struct pispbe_node *node = context->node;
 	struct pispbe_dev *pispbe = node->pispbe;
 	struct pispbe_buffer *buf, *tmp;
 	unsigned long flags;
@@ -900,13 +995,13 @@ static int pispbe_node_start_streaming(struct vb2_queue *q, unsigned int count)
 		node->pispbe->streaming_map);
 
 	/* Maybe we're ready to run. */
-	pispbe_schedule(pispbe, false);
+	pispbe_schedule(pispbe, context, false);
 
 	return 0;
 
 err_return_buffers:
 	spin_lock_irqsave(&pispbe->hw_lock, flags);
-	list_for_each_entry_safe(buf, tmp, &node->ready_queue, ready_list) {
+	list_for_each_entry_safe(buf, tmp, &context->ready_queue, ready_list) {
 		list_del(&buf->ready_list);
 		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_QUEUED);
 	}
@@ -917,7 +1012,8 @@ err_return_buffers:
 
 static void pispbe_node_stop_streaming(struct vb2_queue *q)
 {
-	struct pispbe_node *node = vb2_get_drv_priv(q);
+	struct pispbe_context *context = pispbe_context_from_queue(q);
+	struct pispbe_node *node = context->node;
 	struct pispbe_dev *pispbe = node->pispbe;
 	struct pispbe_buffer *buf;
 	unsigned long flags;
@@ -936,19 +1032,19 @@ static void pispbe_node_stop_streaming(struct vb2_queue *q)
 	do {
 		unsigned long flags1;
 
-		spin_lock_irqsave(&node->ready_lock, flags1);
-		buf = list_first_entry_or_null(&node->ready_queue,
+		spin_lock_irqsave(&context->ready_lock, flags1);
+		buf = list_first_entry_or_null(&context->ready_queue,
 					       struct pispbe_buffer,
 					       ready_list);
 		if (buf) {
 			list_del(&buf->ready_list);
 			vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 		}
-		spin_unlock_irqrestore(&node->ready_lock, flags1);
+		spin_unlock_irqrestore(&context->ready_lock, flags1);
 	} while (buf);
 	spin_unlock_irqrestore(&pispbe->hw_lock, flags);
 
-	vb2_wait_for_all_buffers(&node->queue);
+	vb2_wait_for_all_buffers(&context->vdev_context.queue);
 
 	spin_lock_irqsave(&pispbe->hw_lock, flags);
 	pispbe->streaming_map &= ~BIT(node->id);
@@ -999,6 +1095,8 @@ static int pispbe_node_g_fmt_vid_cap(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 
 	if (!NODE_IS_CAPTURE(node) || NODE_IS_META(node)) {
 		dev_dbg(pispbe->dev,
@@ -1007,7 +1105,7 @@ static int pispbe_node_g_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	*f = node->format;
+	*f = context->format;
 	dev_dbg(pispbe->dev, "Get capture format for node %s\n",
 		NODE_NAME(node));
 
@@ -1019,6 +1117,8 @@ static int pispbe_node_g_fmt_vid_out(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 
 	if (NODE_IS_CAPTURE(node) || NODE_IS_META(node)) {
 		dev_dbg(pispbe->dev,
@@ -1027,7 +1127,7 @@ static int pispbe_node_g_fmt_vid_out(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	*f = node->format;
+	*f = context->format;
 	dev_dbg(pispbe->dev, "Get output format for node %s\n",
 		NODE_NAME(node));
 
@@ -1039,6 +1139,8 @@ static int pispbe_node_g_fmt_meta_out(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 
 	if (!NODE_IS_META(node) || NODE_IS_CAPTURE(node)) {
 		dev_dbg(pispbe->dev,
@@ -1047,7 +1149,7 @@ static int pispbe_node_g_fmt_meta_out(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	*f = node->format;
+	*f = context->format;
 	dev_dbg(pispbe->dev, "Get output format for meta node %s\n",
 		NODE_NAME(node));
 
@@ -1215,17 +1317,19 @@ static int pispbe_node_s_fmt_vid_cap(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 	int ret;
 
 	ret = pispbe_node_try_fmt_vid_cap(file, priv, f);
 	if (ret < 0)
 		return ret;
 
-	if (vb2_is_busy(&node->queue))
+	if (vb2_is_busy(&context->vdev_context.queue))
 		return -EBUSY;
 
-	node->format = *f;
-	node->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
+	context->format = *f;
+	context->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
 
 	dev_dbg(pispbe->dev, "Set capture format for node %s to %p4cc\n",
 		NODE_NAME(node), &f->fmt.pix_mp.pixelformat);
@@ -1238,17 +1342,19 @@ static int pispbe_node_s_fmt_vid_out(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 	int ret;
 
 	ret = pispbe_node_try_fmt_vid_out(file, priv, f);
 	if (ret < 0)
 		return ret;
 
-	if (vb2_is_busy(&node->queue))
+	if (vb2_is_busy(&context->vdev_context.queue))
 		return -EBUSY;
 
-	node->format = *f;
-	node->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
+	context->format = *f;
+	context->pisp_format = pispbe_find_fmt(f->fmt.pix_mp.pixelformat);
 
 	dev_dbg(pispbe->dev, "Set output format for node %s to %p4cc\n",
 		NODE_NAME(node), &f->fmt.pix_mp.pixelformat);
@@ -1261,17 +1367,19 @@ static int pispbe_node_s_fmt_meta_out(struct file *file, void *priv,
 {
 	struct pispbe_node *node = video_drvdata(file);
 	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
 	int ret;
 
 	ret = pispbe_node_try_fmt_meta_out(file, priv, f);
 	if (ret < 0)
 		return ret;
 
-	if (vb2_is_busy(&node->queue))
+	if (vb2_is_busy(&context->vdev_context.queue))
 		return -EBUSY;
 
-	node->format = *f;
-	node->pisp_format = &meta_out_supported_formats[0];
+	context->format = *f;
+	context->pisp_format = &meta_out_supported_formats[0];
 
 	dev_dbg(pispbe->dev, "Set output format for meta node %s to %p4cc\n",
 		NODE_NAME(node), &f->fmt.meta.dataformat);
@@ -1283,8 +1391,15 @@ static int pispbe_node_enum_fmt(struct file *file, void  *priv,
 				struct v4l2_fmtdesc *f)
 {
 	struct pispbe_node *node = video_drvdata(file);
+	struct pispbe_context *context = pispbe_context_from_file(file,
+								  &node->vfd);
+	if (!context) {
+		pr_err("%s:%d NO CONTEXT FOR %s\n", __func__, __LINE__,
+				NODE_NAME(node));
+		return -EINVAL;
+	}
 
-	if (f->type != node->queue.type)
+	if (f->type != context->vdev_context.queue.type)
 		return -EINVAL;
 
 	if (NODE_IS_META(node)) {
@@ -1332,8 +1447,85 @@ static int pispbe_enum_framesizes(struct file *file, void *priv,
 	return 0;
 }
 
+static void pispbe_node_def_fmt(struct pispbe_node *node,
+				struct pispbe_context *context)
+{
+	if (NODE_IS_META(node) && NODE_IS_OUTPUT(node)) {
+		/* Config node */
+		struct v4l2_format *f = &context->format;
+
+		f->fmt.meta.dataformat = V4L2_META_FMT_RPI_BE_CFG;
+		f->fmt.meta.buffersize = sizeof(struct pisp_be_tiles_config);
+		f->type = node->buf_type;
+	} else {
+		struct v4l2_format f = {
+			.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_YUV420,
+			.fmt.pix_mp.width = 1920,
+			.fmt.pix_mp.height = 1080,
+			.type = node->buf_type,
+		};
+		pispbe_try_format(&f, node);
+		context->format = f;
+	}
+
+	context->pisp_format = pispbe_find_fmt(context->format.fmt.pix_mp.pixelformat);
+}
+
+static int pispbe_init_context(struct pispbe_context *context)
+{
+	struct video_device_context *c = &context->vdev_context;
+	struct pispbe_dev *pispbe = context->pispbe;
+	struct pispbe_node *node = context->node;
+	struct vb2_queue *q;
+	int ret;
+
+	mutex_init(&c->queue_lock);
+
+	INIT_LIST_HEAD(&context->ready_queue);
+	spin_lock_init(&context->ready_lock);
+
+	context->format.type = node->buf_type;
+	pispbe_node_def_fmt(node, context);
+
+	q = &c->queue;
+	q->type = node->buf_type;
+	q->io_modes = VB2_MMAP | VB2_DMABUF;
+	q->mem_ops = &vb2_dma_contig_memops;
+	q->drv_priv = node;
+	q->ops = &pispbe_node_queue_ops;
+	q->buf_struct_size = sizeof(struct pispbe_buffer);
+	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	q->dev = pispbe->dev;
+	/* get V4L2 to handle node->queue locking */
+	q->lock = &c->queue_lock;
+
+	ret = vb2_queue_init(q);
+	if (ret < 0) {
+		dev_err(pispbe->dev, "vb2_queue_init failed\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+static int pispbe_bind_context(struct file *file, void *fh,
+			       struct video_device_context *c)
+{
+	struct pispbe_context *context = (struct pispbe_context *)c;
+	struct pispbe_node *node = video_drvdata(file);
+	struct pispbe_dev *pispbe = node->pispbe;
+
+pr_err("%s:%dBIND CONTEXT for %s\n", __func__, __LINE__, NODE_NAME(node));
+
+	context->node = node;
+	context->pispbe = pispbe;
+
+	return pispbe_init_context(context);
+}
+
 static const struct v4l2_ioctl_ops pispbe_node_ioctl_ops = {
 	.vidioc_querycap = pispbe_node_querycap,
+	.vidioc_bind_context = pispbe_bind_context,
 	.vidioc_g_fmt_vid_cap_mplane = pispbe_node_g_fmt_vid_cap,
 	.vidioc_g_fmt_vid_out_mplane = pispbe_node_g_fmt_vid_out,
 	.vidioc_g_fmt_meta_out = pispbe_node_g_fmt_meta_out,
@@ -1367,28 +1559,23 @@ static const struct video_device pispbe_videodev = {
 	.release = video_device_release_empty,
 };
 
-static void pispbe_node_def_fmt(struct pispbe_node *node)
+static int pispbe_vdev_registered(struct video_device *vfd)
 {
-	if (NODE_IS_META(node) && NODE_IS_OUTPUT(node)) {
-		/* Config node */
-		struct v4l2_format *f = &node->format;
+	struct pispbe_node *node = video_get_drvdata(vfd);
+	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context = (struct pispbe_context *)
+					  vfd->default_context;
 
-		f->fmt.meta.dataformat = V4L2_META_FMT_RPI_BE_CFG;
-		f->fmt.meta.buffersize = sizeof(struct pisp_be_tiles_config);
-		f->type = node->buf_type;
-	} else {
-		struct v4l2_format f = {
-			.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_YUV420,
-			.fmt.pix_mp.width = 1920,
-			.fmt.pix_mp.height = 1080,
-			.type = node->buf_type,
-		};
-		pispbe_try_format(&f, node);
-		node->format = f;
-	}
+	/* Initialize the video device default context. */
+	context->node = node;
+	context->pispbe = pispbe;
 
-	node->pisp_format = pispbe_find_fmt(node->format.fmt.pix_mp.pixelformat);
+	return pispbe_init_context(context);
 }
+
+static const struct video_device_ops pispbe_vdev_ops = {
+	.registered = pispbe_vdev_registered,
+};
 
 /*
  * Initialise a struct pispbe_node and register it as /dev/video<N>
@@ -1400,7 +1587,6 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	struct pispbe_node *node = &pispbe->node[id];
 	struct media_entity *entity = &node->vfd.entity;
 	struct video_device *vdev = &node->vfd;
-	struct vb2_queue *q = &node->queue;
 	int ret;
 
 	node->id = id;
@@ -1408,29 +1594,6 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	node->buf_type = node_desc[id].buf_type;
 
 	mutex_init(&node->node_lock);
-	mutex_init(&node->queue_lock);
-	INIT_LIST_HEAD(&node->ready_queue);
-	spin_lock_init(&node->ready_lock);
-
-	node->format.type = node->buf_type;
-	pispbe_node_def_fmt(node);
-
-	q->type = node->buf_type;
-	q->io_modes = VB2_MMAP | VB2_DMABUF;
-	q->mem_ops = &vb2_dma_contig_memops;
-	q->drv_priv = node;
-	q->ops = &pispbe_node_queue_ops;
-	q->buf_struct_size = sizeof(struct pispbe_buffer);
-	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->dev = pispbe->dev;
-	/* get V4L2 to handle node->queue locking */
-	q->lock = &node->queue_lock;
-
-	ret = vb2_queue_init(q);
-	if (ret < 0) {
-		dev_err(pispbe->dev, "vb2_queue_init failed\n");
-		goto err_mutex_destroy;
-	}
 
 	*vdev = pispbe_videodev; /* default initialization */
 	strscpy(vdev->name, node_desc[id].ent_name, sizeof(vdev->name));
@@ -1438,8 +1601,8 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	vdev->vfl_dir = output ? VFL_DIR_TX : VFL_DIR_RX;
 	/* get V4L2 to serialise our ioctls */
 	vdev->lock = &node->node_lock;
-	vdev->queue = &node->queue;
 	vdev->device_caps = V4L2_CAP_STREAMING | node_desc[id].caps;
+	vdev->vdev_ops = &pispbe_vdev_ops;
 
 	node->pad.flags = output ? MEDIA_PAD_FL_SOURCE : MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(entity, 1, &node->pad);
@@ -1447,8 +1610,13 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 		dev_err(pispbe->dev,
 			"Failed to register media pads for %s device node\n",
 			NODE_NAME(node));
-		goto err_unregister_queue;
+		goto err_mutex_destroy;
 	}
+
+	vdev->context_info.size = sizeof(struct pispbe_context);
+	vdev->context_info.max_contexts = PISPBE_NUM_CONTEXTS;
+
+	video_set_drvdata(vdev, node);
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO,
 				    PISPBE_VIDEO_NODE_OFFSET);
@@ -1456,9 +1624,8 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 		dev_err(pispbe->dev,
 			"Failed to register video %s device node\n",
 			NODE_NAME(node));
-		goto err_unregister_queue;
+		goto err_mutex_destroy;
 	}
-	video_set_drvdata(vdev, node);
 
 	if (output)
 		ret = media_create_pad_link(entity, 0, &pispbe->sd.entity,
@@ -1478,11 +1645,8 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 
 err_unregister_video_dev:
 	video_unregister_device(&node->vfd);
-err_unregister_queue:
-	vb2_queue_release(&node->queue);
 err_mutex_destroy:
 	mutex_destroy(&node->node_lock);
-	mutex_destroy(&node->queue_lock);
 	return ret;
 }
 
@@ -1580,10 +1744,8 @@ static int pispbe_init_devices(struct pispbe_dev *pispbe)
 err_unregister_mdev:
 	media_device_unregister(mdev);
 err_unregister_nodes:
-	while (num_regist-- > 0) {
+	while (num_regist-- > 0)
 		video_unregister_device(&pispbe->node[num_regist].vfd);
-		vb2_queue_release(&pispbe->node[num_regist].queue);
-	}
 	v4l2_device_unregister_subdev(&pispbe->sd);
 	media_entity_cleanup(&pispbe->sd.entity);
 err_unregister_v4l2:
@@ -1611,9 +1773,7 @@ static void pispbe_destroy_devices(struct pispbe_dev *pispbe)
 
 	for (int i = PISPBE_NUM_NODES - 1; i >= 0; i--) {
 		video_unregister_device(&pispbe->node[i].vfd);
-		vb2_queue_release(&pispbe->node[i].queue);
 		mutex_destroy(&pispbe->node[i].node_lock);
-		mutex_destroy(&pispbe->node[i].queue_lock);
 	}
 
 	media_device_cleanup(&pispbe->mdev);
