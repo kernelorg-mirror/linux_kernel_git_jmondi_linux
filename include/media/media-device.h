@@ -331,6 +331,9 @@ int __must_check __media_device_register(struct media_device *mdev,
  */
 void media_device_unregister(struct media_device *mdev);
 
+struct media_device_context *media_device_get_context(struct media_device *mdev,
+						      unsigned long fd);
+
 /**
  * media_device_register_entity() - registers a media entity inside a
  *	previously registered media device.
