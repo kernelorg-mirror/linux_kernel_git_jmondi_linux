@@ -1159,6 +1159,20 @@ struct video_device_context *vdev_context(struct video_device *vdev,
 }
 EXPORT_SYMBOL_GPL(vdev_context);
 
+struct video_device_context *vdev_context_from_file(struct file *filp,
+						    struct video_device *vfd)
+{
+	struct v4l2_fh *vfh =
+		test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) ? filp->private_data
+							    : NULL;
+
+	if (vfh)
+		return vfh->context;
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(vdev_context_from_file);
+
 #if defined(CONFIG_MEDIA_CONTROLLER)
 
 __must_check int video_device_pipeline_start(struct video_device *vdev,
