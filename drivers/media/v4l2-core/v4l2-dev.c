@@ -1086,6 +1086,9 @@ int __video_register_device(struct video_device *vdev,
 	/* Part 5: Register the entity. */
 	ret = video_register_media_controller(vdev);
 
+	vdev->num_contexts = 0;
+	vdev->contexts = NULL;
+
 	/* Part 6: Activate this minor. The char device can now be used. */
 	set_bit(V4L2_FL_REGISTERED, &vdev->flags);
 	mutex_unlock(&videodev_lock);
@@ -1129,6 +1132,21 @@ void video_unregister_device(struct video_device *vdev)
 	device_unregister(&vdev->dev);
 }
 EXPORT_SYMBOL(video_unregister_device);
+
+struct video_device_context *vdev_context(struct video_device *vdev,
+					  struct media_device_context *mdev_context)
+{
+	for (unsigned int i = 0; i < vdev->num_contexts; ++i) {
+		struct video_device_context_map *map = &vdev->contexts[i];
+
+		if (map->mdev_context == mdev_context)
+			return map->vdev_context;
+	}
+
+	return NULL;
+
+}
+EXPORT_SYMBOL_GPL(vdev_context);
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 

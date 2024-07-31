@@ -17,6 +17,8 @@
 #include <linux/mutex.h>
 #include <linux/videodev2.h>
 
+#include <media/videobuf2-core.h>
+
 #include <media/media-entity.h>
 
 #define VIDEO_MAJOR	81
@@ -219,6 +221,21 @@ struct v4l2_file_operations {
  *	the common handler
  */
 
+struct video_device_context {
+	struct media_device_context *mdev_context;
+
+	struct mutex queue_lock;
+	struct vb2_queue queue;
+};
+
+struct video_device_context_map {
+	struct media_device_context *mdev_context;
+	struct video_device_context *vdev_context;
+};
+
+struct video_device_context *vdev_context(struct video_device *vdev,
+					  struct media_device_context *mdev_context);
+
 /**
  * struct video_device - Structure used to create and manage the V4L2 device
  *	nodes.
@@ -280,6 +297,9 @@ struct video_device {
 	struct v4l2_ctrl_handler *ctrl_handler;
 
 	struct vb2_queue *queue;
+
+	struct video_device_context_map *contexts;
+	unsigned int num_contexts;
 
 	struct v4l2_prio_state *prio;
 
