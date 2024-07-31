@@ -242,6 +242,12 @@ struct video_device_context *vdev_context(struct video_device *vdev,
 struct video_device_context *vdev_context_from_file(struct file *filp,
 						    struct video_device *vdev);
 
+static inline struct video_device_context *
+vdev_context_from_queue(struct vb2_queue *q)
+{
+	return container_of(q, struct video_device_context, queue);
+}
+
 /**
  * struct video_device - Structure used to create and manage the V4L2 device
  *	nodes.
