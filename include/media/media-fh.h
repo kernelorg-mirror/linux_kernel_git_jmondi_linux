@@ -12,6 +12,10 @@
 #include <linux/file.h>
 
 #include <media/media-devnode.h>
+#include <media/videobuf2-core.h>
+
+struct media_device_context {
+};
 
 /**
  * struct media_device_fh - File handle specific information on MC
@@ -22,11 +26,18 @@
 struct media_device_fh {
 	struct media_devnode_fh fh;
 	struct list_head mdev_list;
+
+	struct media_device_context *context;
 };
 
 static inline struct media_device_fh *media_device_fh(struct file *filp)
 {
 	return container_of(filp->private_data, struct media_device_fh, fh);
+}
+
+static inline struct media_device_context *media_device_context(struct file *filp)
+{
+	return media_device_fh(filp)->context;
 }
 
 #endif /* MEDIA_FH_H */

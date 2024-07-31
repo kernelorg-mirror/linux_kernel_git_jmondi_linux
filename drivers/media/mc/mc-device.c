@@ -10,6 +10,7 @@
 
 #include <linux/compat.h>
 #include <linux/export.h>
+#include <linux/file.h>
 #include <linux/idr.h>
 #include <linux/ioctl.h>
 #include <linux/media.h>
@@ -54,6 +55,10 @@ static int media_device_open(struct media_devnode *devnode, struct file *filp)
 	if (!fh)
 		return -ENOMEM;
 
+	fh->context = kzalloc(sizeof(*fh->context), GFP_KERNEL);
+	if (!fh->context)
+		return -ENOMEM;
+
 	fh->fh.ref = devnode->ref;
 
 	filp->private_data = &fh->fh;
@@ -78,6 +83,7 @@ static int media_device_close(struct file *filp)
 		spin_unlock_irq(&mdev->fh_list_lock);
 	}
 
+	kfree(fh->context);
 	kfree(fh);
 
 	return 0;
@@ -884,6 +890,15 @@ void media_device_unregister(struct media_device *mdev)
 		put_device(&mdev->devnode.ref->dev);
 }
 EXPORT_SYMBOL_GPL(media_device_unregister);
+
+struct media_device_context *media_device_get_context(struct media_device *mdev,
+						      unsigned long fd)
+{
+	struct fd mfd = fdget(fd);
+
+	return media_device_context(mfd.file);
+}
+EXPORT_SYMBOL_GPL(media_device_get_context);
 
 #if IS_ENABLED(CONFIG_PCI)
 void media_device_pci_init(struct media_device *mdev,
