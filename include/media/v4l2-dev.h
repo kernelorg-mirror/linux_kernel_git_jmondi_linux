@@ -247,6 +247,9 @@ struct video_device_context_info {
 struct video_device_context *vdev_context(struct video_device *vdev,
 					  struct media_device_context *mdev_context);
 
+struct video_device_context *vdev_context_from_file(struct file *filp,
+						    struct video_device *vdev);
+
 /**
  * struct video_device - Structure used to create and manage the V4L2 device
  *	nodes.
