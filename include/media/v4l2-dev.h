@@ -292,6 +292,11 @@ vdev_context_from_queue(struct vb2_queue *q)
  *	Only set @dev_parent if that can't be deduced from @v4l2_dev.
  */
 
+struct video_device_ops {
+	/* post-register driver callback. */
+	int (*registered)(struct video_device *vfd);
+};
+
 struct video_device {
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	struct media_entity entity;
@@ -299,6 +304,7 @@ struct video_device {
 	struct media_pipeline pipe;
 #endif
 	const struct v4l2_file_operations *fops;
+	const struct video_device_ops *vdev_ops;
 
 	u32 device_caps;
 

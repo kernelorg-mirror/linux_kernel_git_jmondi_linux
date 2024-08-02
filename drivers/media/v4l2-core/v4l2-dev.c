@@ -1094,7 +1094,18 @@ int __video_register_device(struct video_device *vdev,
 	vdev->num_contexts = 0;
 	vdev->contexts = NULL;
 
-	/* Part 6: Activate this minor. The char device can now be used. */
+	/* Part 6: Complete the video device registration */
+	if (vdev->vdev_ops && vdev->vdev_ops->registered) {
+		ret = vdev->vdev_ops->registered(vdev);
+		if (ret < 0) {
+			mutex_unlock(&videodev_lock);
+			pr_err("%s: device register completion failed\n",
+			       __func__);
+			goto cleanup;
+		}
+	}
+
+	/* Part 7: Activate this minor. The char device can now be used. */
 	set_bit(V4L2_FL_REGISTERED, &vdev->flags);
 	mutex_unlock(&videodev_lock);
 
