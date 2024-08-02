@@ -321,6 +321,7 @@ struct video_device {
 
 	struct video_device_context_info context_info;
 	struct video_device_context_map *contexts;
+	struct video_device_context *default_context;
 	unsigned int num_contexts;
 
 	struct v4l2_prio_state *prio;

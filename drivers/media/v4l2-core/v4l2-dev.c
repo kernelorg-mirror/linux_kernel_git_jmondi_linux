@@ -31,6 +31,8 @@
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
 
+#include <media/media-fh.h>
+
 #define VIDEO_NUM_DEVICES	256
 #define VIDEO_NAME              "video4linux"
 
@@ -38,6 +40,8 @@
 		printk(KERN_DEBUG pr_fmt("%s: " fmt),			\
 		       __func__, ##arg);				\
 } while (0)
+
+static struct media_device_context default_mdev_context;
 
 /*
  *	sysfs stuff
@@ -1091,10 +1095,29 @@ int __video_register_device(struct video_device *vdev,
 	/* Part 5: Register the entity. */
 	ret = video_register_media_controller(vdev);
 
+	/*
+	 * Part 6: Complete the video device registration by initializing the
+	 * default context
+	 */
 	vdev->num_contexts = 0;
 	vdev->contexts = NULL;
+	vdev->default_contexts = NULL;
+	if (vdev->context_info.size &&
+	    vdev->context_info.size >= sizeof(struct video_device_context)) {
+		vdev->default_context = kzalloc(vdev->context_info.size,
+						GFP_KERNEL);
+		if (!vdev->default_context) {
+			ret = -ENOMEM;
+			mutex_unlock(&videodev_lock);
+			pr_err("%s: device_register failed\n", __func__);
+			goto cleanup;
 
-	/* Part 6: Complete the video device registration */
+		}
+
+		vdev->default_context->vfd = vdev;
+		vdev->default_context->mdev_context = &default_mdev_context;
+	}
+
 	if (vdev->vdev_ops && vdev->vdev_ops->registered) {
 		ret = vdev->vdev_ops->registered(vdev);
 		if (ret < 0) {
@@ -1113,6 +1136,8 @@ int __video_register_device(struct video_device *vdev,
 
 cleanup:
 	mutex_lock(&videodev_lock);
+	kfree(vdev->default_context);
+	vdev->default_context = NULL;
 	if (vdev->cdev)
 		cdev_del(vdev->cdev);
 	video_devices[vdev->minor] = NULL;
@@ -1142,7 +1167,9 @@ void video_unregister_device(struct video_device *vdev)
 	 * Once this bit has been cleared video_get may never be called again.
 	 */
 
-	/* Release context maps. */
+	/* Release context maps and default context. */
+	kfree(vdev->default_context);
+	vdev->default_context = NULL;
 	kfree(vdev->contexts);
 	vdev->contexts = NULL;
 	vdev->num_contexts = 0;
@@ -1161,12 +1188,11 @@ struct video_device_context *vdev_context(struct video_device *vdev,
 	for (unsigned int i = 0; i < vdev->num_contexts; ++i) {
 		struct video_device_context_map *map = &vdev->contexts[i];
 
-		if (map->mdev_context == mdev_context)
+		if (map->mdev_context == mdev_context && map->vdev_context)
 			return map->vdev_context;
 	}
 
-	return NULL;
-
+	return vdev->default_context;
 }
 EXPORT_SYMBOL_GPL(vdev_context);
 
@@ -1177,10 +1203,10 @@ struct video_device_context *vdev_context_from_file(struct file *filp,
 		test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) ? filp->private_data
 							    : NULL;
 
-	if (vfh)
+	if (vfh && vfh->context)
 		return vfh->context;
 
-	return NULL;
+	return vfd->default_context;
 }
 EXPORT_SYMBOL_GPL(vdev_context_from_file);
 
