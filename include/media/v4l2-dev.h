@@ -289,6 +289,12 @@ vdev_context_from_queue(struct vb2_queue *q)
  *	Only set @dev_parent if that can't be deduced from @v4l2_dev.
  */
 
+struct video_device_context_ops {
+	int (*alloc_context)(struct video_device *vfd,
+			     struct video_device_context **context);
+	void (*release_context)(struct video_device_context *context);
+};
+
 struct video_device {
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	struct media_entity entity;
@@ -296,6 +302,7 @@ struct video_device {
 	struct media_pipeline pipe;
 #endif
 	const struct v4l2_file_operations *fops;
+	const struct video_device_context_ops *context_ops;
 
 	u32 device_caps;
 
