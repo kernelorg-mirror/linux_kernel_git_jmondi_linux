@@ -173,6 +173,34 @@ static inline void video_put(struct video_device *vdev)
 	put_device(&vdev->dev);
 }
 
+static void video_release_contexts(struct video_device *vdev)
+{
+	struct video_device_context_map *map;
+	struct video_device_context_map *tmp;
+
+	mutex_lock(&vdev->contexts_mutex);
+	list_for_each_entry_safe(map, tmp, &vdev->contexts, list) {
+		/*
+		 * All contexts associated with an v4l2-fh should have been
+		 * released as all file handles should have been closed when
+		 * the video device is unregistered.
+		 *
+		 * If not, leak memory and warn later.
+		 */
+		if (WARN_ON(map->vdev_context))
+			continue;
+
+		/*
+		 * TODO: decrement the map->mdev_context refcount to implement
+		 * automatic release.
+		 */
+
+		kfree(map);
+		vdev->num_contexts--;
+	}
+	mutex_unlock(&vdev->contexts_mutex);
+}
+
 /* Called when the last user of the video device exits. */
 static void v4l2_device_release(struct device *cd)
 {
@@ -228,8 +256,11 @@ static void v4l2_device_release(struct device *cd)
 		vdev->context_ops->release_context(vdev->default_context);
 	vdev->default_context = NULL;
 
+	video_release_contexts(vdev);
+	if (WARN_ON(vdev->num_contexts))
+		vdev->num_contexts = 0;
+
 	mutex_destroy(&vdev->contexts_mutex);
-	vdev->num_contexts = 0;
 
 	/* Release video_device and perform other cleanups as needed. */
 	vdev->release(vdev);
