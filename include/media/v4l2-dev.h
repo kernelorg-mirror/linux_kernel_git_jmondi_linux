@@ -477,6 +477,18 @@ struct video_device * __must_check video_device_alloc(void);
 void video_device_release(struct video_device *vdev);
 
 /**
+ * video_release_context - release a video device context
+ *
+ * @vdev: pointer to &struct video_device
+ * @context: pointer to the video context to release
+ *
+ * The intended caller is the v4l2-fh layer when a file handle gets
+ * closed and the associated video context has to be released.
+ */
+void video_release_context(struct video_device *vdev,
+			   struct video_device_context *context);
+
+/**
  * video_device_release_empty - helper function to implement the
  *	video_device->release\(\) callback.
  *

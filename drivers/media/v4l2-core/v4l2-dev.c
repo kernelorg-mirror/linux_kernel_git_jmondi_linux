@@ -1146,6 +1146,37 @@ cleanup:
 }
 EXPORT_SYMBOL(__video_register_device);
 
+void video_release_context(struct video_device *vdev,
+			   struct video_device_context *context)
+{
+	struct video_device_context_map *map;
+
+	/*
+	 * It is safe to maintain an map entry in the vdev->contexts list with
+	 * this video device context set to NULL. The vdev_context() helper
+	 * function will return the default video device context.
+	 */
+	mutex_lock(&vdev->contexts_mutex);
+	list_for_each_entry(map, &vdev->contexts, list) {
+		if (map->vdev_context != context)
+			continue;
+
+		map->vdev_context = NULL;
+		break;
+	}
+	mutex_unlock(&vdev->contexts_mutex);
+
+	/*
+	 * This should never happen, if a context has been allocated, the
+	 * ops are valid.
+	 */
+	if (WARN_ON(!vdev->context_ops || !vdev->context_ops->release_context))
+		return;
+
+	vdev->context_ops->release_context(context);
+}
+EXPORT_SYMBOL_GPL(video_release_context);
+
 /**
  *	video_unregister_device - unregister a video4linux device
  *	@vdev: the device to unregister
@@ -1168,6 +1199,7 @@ void video_unregister_device(struct video_device *vdev)
 	mutex_unlock(&videodev_lock);
 	if (test_bit(V4L2_FL_USES_V4L2_FH, &vdev->flags))
 		v4l2_event_wake_all(vdev);
+
 	device_unregister(&vdev->dev);
 }
 EXPORT_SYMBOL(video_unregister_device);
