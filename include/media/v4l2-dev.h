@@ -319,6 +319,7 @@ struct video_device {
 
 	struct mutex contexts_mutex; /* protect 'contexts' list. */
 	struct list_head contexts;
+	struct video_device_context *default_context;
 	unsigned int num_contexts;
 
 	struct v4l2_prio_state *prio;

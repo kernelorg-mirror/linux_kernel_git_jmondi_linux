@@ -31,6 +31,8 @@
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
 
+#include <media/media-fh.h>
+
 #define VIDEO_NUM_DEVICES	256
 #define VIDEO_NAME              "video4linux"
 
@@ -220,6 +222,11 @@ static void v4l2_device_release(struct device *cd)
 	if (mdev && mdev_has_ref)
 		media_device_put(mdev);
 #endif
+
+	/* Release default context. */
+	if (vdev->default_context)
+		vdev->context_ops->release_context(vdev->default_context);
+	vdev->default_context = NULL;
 
 	mutex_destroy(&vdev->contexts_mutex);
 	vdev->num_contexts = 0;
@@ -1089,11 +1096,34 @@ int __video_register_device(struct video_device *vdev,
 	/* Part 5: Register the entity. */
 	ret = video_register_media_controller(vdev);
 
+	/*
+	 * Part 6: Complete the video device registration by initializing the
+	 * default context. The defaul context serves for context-aware driver
+	 * to operate with a non-context-aware userspace that never creates
+	 * new contexts. If the video device driver is not context aware, it
+	 * will never implement 'context_ops' and will never use the default
+	 * context.
+	 */
 	vdev->num_contexts = 0;
 	INIT_LIST_HEAD(&vdev->contexts);
 	mutex_init(&vdev->contexts_mutex);
 
-	/* Part 6: Activate this minor. The char device can now be used. */
+	vdev->default_context = NULL;
+	if (vdev->context_ops && vdev->context_ops->alloc_context &&
+	    vdev->context_ops->release_context) {
+		ret = vdev->context_ops->alloc_context(vdev,
+						       &vdev->default_context);
+		if (ret) {
+			mutex_unlock(&videodev_lock);
+			pr_err("%s: default context alloc failed\n", __func__);
+			goto cleanup;
+		}
+
+		vdev->default_context->vfd = vdev;
+		vdev->default_context->mdev_context = NULL; ;
+	}
+
+	/* Part 7: Activate this minor. The char device can now be used. */
 	set_bit(V4L2_FL_REGISTERED, &vdev->flags);
 	mutex_unlock(&videodev_lock);
 
@@ -1102,6 +1132,9 @@ int __video_register_device(struct video_device *vdev,
 cleanup:
 	mutex_lock(&videodev_lock);
 	mutex_destroy(&vdev->contexts_mutex);
+	if (vdev->default_context)
+		vdev->context_ops->release_context(vdev->default_context);
+	vdev->default_context = NULL;
 	if (vdev->cdev)
 		cdev_del(vdev->cdev);
 	video_devices[vdev->minor] = NULL;
@@ -1142,12 +1175,12 @@ EXPORT_SYMBOL(video_unregister_device);
 struct video_device_context *vdev_context(struct video_device *vdev,
 					  struct media_device_context *mdev_context)
 {
-	struct video_device_context *c = NULL;
+	struct video_device_context *c = vdev->default_context;
 	struct video_device_context_map *map;
 
 	mutex_lock(&vdev->contexts_mutex);
 	list_for_each_entry(map, &vdev->contexts, list) {
-		if (map->mdev_context != mdev_context)
+		if (map->mdev_context != mdev_context || !map->vdev_context)
 			continue;
 
 		c = map->vdev_context;
@@ -1166,10 +1199,10 @@ struct video_device_context *vdev_context_from_file(struct file *filp,
 		test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) ? filp->private_data
 							    : NULL;
 
-	if (vfh)
+	if (vfh && vfh->context)
 		return vfh->context;
 
-	return NULL;
+	return vfd->default_context;
 }
 EXPORT_SYMBOL_GPL(vdev_context_from_file);
 

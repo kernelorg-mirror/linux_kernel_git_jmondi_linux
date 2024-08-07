@@ -985,7 +985,9 @@ static struct vb2_queue *get_vb2_queue(struct file *file,
 {
 	struct video_device_context *c = vdev_context_from_file(file, vdev);
 
-	return c ? &c->queue : vdev->queue;
+	return c ? &c->queue :
+	       vdev->default_context ? &vdev->default_context->queue :
+	       vdev->queue;
 }
 
 /* vb2 ioctl helpers */
