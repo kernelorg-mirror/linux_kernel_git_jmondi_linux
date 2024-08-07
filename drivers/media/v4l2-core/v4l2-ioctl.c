@@ -8,6 +8,7 @@
  *              Mauro Carvalho Chehab <mchehab@kernel.org> (version 2)
  */
 
+#include <linux/file.h>
 #include <linux/compat.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -20,6 +21,7 @@
 #include <linux/videodev2.h>
 
 #include <media/media-device.h> /* for media_set_bus_info() */
+#include <media/media-fh.h> /* for context handling */
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-ctrls.h>
@@ -347,6 +349,13 @@ static void v4l_print_format(const void *arg, bool write_only)
 			&pixelformat, meta->buffersize);
 		break;
 	}
+}
+
+static void v4l_print_context(const void *arg, bool write_only)
+{
+	const struct v4l2_context *c = arg;
+
+	pr_cont("context=%llu\n", c->context_fd);
 }
 
 static void v4l_print_framebuffer(const void *arg, bool write_only)
@@ -1525,7 +1534,7 @@ static void v4l_fill_fmtdesc(struct v4l2_fmtdesc *fmt)
 		case V4L2_PIX_FMT_PISP_COMP1_RGGB:
 		case V4L2_PIX_FMT_PISP_COMP1_GRBG:
 		case V4L2_PIX_FMT_PISP_COMP1_GBRG:
-		case V4L2_PIX_FMT_PISP_COMP1_BGGR: 
+		case V4L2_PIX_FMT_PISP_COMP1_BGGR:
 		case V4L2_PIX_FMT_PISP_COMP1_MONO: descr = "PiSP Bayer Compressed Format"; break;
 		case V4L2_PIX_FMT_PISP_COMP2_RGGB:
 		case V4L2_PIX_FMT_PISP_COMP2_GRBG:
@@ -2108,6 +2117,58 @@ static int v4l_overlay(const struct v4l2_ioctl_ops *ops,
 				struct file *file, void *fh, void *arg)
 {
 	return ops->vidioc_overlay(file, fh, *(unsigned int *)arg);
+}
+
+static int v4l_bind_context(const struct v4l2_ioctl_ops *ops,
+			    struct file *file, void *fh, void *arg)
+{
+	struct video_device *vfd = video_devdata(file);
+	struct v4l2_fh *vfh =
+		test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) ? fh : NULL;
+	struct media_device_context *mdev_context;
+	struct video_device_context_map *map;
+	struct v4l2_context *c = arg;
+	struct fd mfd;
+	int ret;
+
+	if (!vfh)
+		return -ENOTTY;
+
+	if (!vfd->context_ops || !vfd->context_ops->alloc_context ||
+	    !vfd->context_ops->release_context)
+		return -ENOTTY;
+
+	mfd = fdget(c->context_fd);
+	mdev_context = media_device_context(mfd.file);
+	fdput(mfd);
+	if (!mdev_context)
+		return -ENOTTY;
+
+	mdev_context->fd = c->context_fd;
+
+	map = kzalloc(sizeof(*map), GFP_KERNEL);
+	if (!map)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&map->list);
+
+	/* Let the driver allocate the per-file handle context. */
+	ret = vfd->context_ops->alloc_context(vfd, &vfh->context);
+	if (ret)
+		return ret;
+
+	vfh->context->mdev_context = mdev_context;
+	vfh->context->vfd = vfd;
+
+	/* And store it in the video device list of active contexts. */
+	map->mdev_context = mdev_context;
+	map->vdev_context = vfh->context;
+
+	mutex_lock(&vfd->contexts_mutex);
+	list_add_tail(&map->list, &vfd->contexts);
+	vfd->num_contexts++;
+	mutex_unlock(&vfd->contexts_mutex);
+
+	return 0;
 }
 
 static int v4l_reqbufs(const struct v4l2_ioctl_ops *ops,
@@ -2853,6 +2914,7 @@ static const struct v4l2_ioctl_info v4l2_ioctls[] = {
 	IOCTL_INFO(VIDIOC_ENUM_FMT, v4l_enum_fmt, v4l_print_fmtdesc, 0),
 	IOCTL_INFO(VIDIOC_G_FMT, v4l_g_fmt, v4l_print_format, 0),
 	IOCTL_INFO(VIDIOC_S_FMT, v4l_s_fmt, v4l_print_format, INFO_FL_PRIO),
+	IOCTL_INFO(VIDIOC_BIND_CONTEXT, v4l_bind_context, v4l_print_context, 0),
 	IOCTL_INFO(VIDIOC_REQBUFS, v4l_reqbufs, v4l_print_requestbuffers, INFO_FL_PRIO | INFO_FL_QUEUE),
 	IOCTL_INFO(VIDIOC_QUERYBUF, v4l_querybuf, v4l_print_buffer, INFO_FL_QUEUE | INFO_FL_CLEAR(v4l2_buffer, length)),
 	IOCTL_INFO(VIDIOC_G_FBUF, v4l_stub_g_fbuf, v4l_print_framebuffer, 0),
