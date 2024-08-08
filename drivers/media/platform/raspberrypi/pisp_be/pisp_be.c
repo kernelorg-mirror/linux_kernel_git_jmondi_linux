@@ -27,6 +27,9 @@
 /* Maximum number of config buffers possible */
 #define PISP_BE_NUM_CONFIG_BUFFERS VB2_MAX_FRAME
 
+/* Maximum number of concurrent contexts. */
+#define PISPBE_MAX_NUM_CONTEXTS	2
+
 #define PISPBE_NAME "pispbe"
 
 /* Some ISP-BE registers */
@@ -164,6 +167,11 @@ struct pispbe_context {
 	struct pispbe_node *node;
 };
 
+static struct pispbe_context *pispbe_context(struct video_device_context *c)
+{
+	return container_of(c, struct pispbe_context, vdev_context);
+}
+
 struct pispbe_node {
 	unsigned int id;
 	int vfl_dir;
@@ -183,7 +191,13 @@ struct pispbe_node {
 	struct vb2_queue queue;
 	struct v4l2_format format;
 	const struct pisp_be_format *pisp_format;
+	u8 num_contexts;
 };
+
+static struct pispbe_node *pispbe_node_from_vdev(struct video_device *vdev)
+{
+	return container_of(vdev, struct pispbe_node, vfd);
+}
 
 /* For logging only, use the entity name with "pispbe" and separator removed */
 #define NODE_NAME(node) \
@@ -1409,20 +1423,12 @@ static const struct v4l2_ioctl_ops pispbe_node_ioctl_ops = {
 	.vidioc_streamoff = vb2_ioctl_streamoff,
 };
 
-static const struct video_device pispbe_videodev = {
-	.name = PISPBE_NAME,
-	.vfl_dir = VFL_DIR_M2M, /* gets overwritten */
-	.fops = &pispbe_fops,
-	.ioctl_ops = &pispbe_node_ioctl_ops,
-	.minor = -1,
-	.release = video_device_release_empty,
-};
-
-static void pispbe_node_def_fmt(struct pispbe_node *node)
+static void pispbe_node_def_fmt(struct pispbe_node *node,
+				struct pispbe_context *context)
 {
 	if (NODE_IS_META(node) && NODE_IS_OUTPUT(node)) {
 		/* Config node */
-		struct v4l2_format *f = &node->format;
+		struct v4l2_format *f = &context->format;
 
 		f->fmt.meta.dataformat = V4L2_META_FMT_RPI_BE_CFG;
 		f->fmt.meta.buffersize = sizeof(struct pisp_be_tiles_config);
@@ -1435,11 +1441,93 @@ static void pispbe_node_def_fmt(struct pispbe_node *node)
 			.type = node->buf_type,
 		};
 		pispbe_try_format(&f, node);
-		node->format = f;
+		context->format = f;
 	}
 
-	node->pisp_format = pispbe_find_fmt(node->format.fmt.pix_mp.pixelformat);
+	context->pisp_format = pispbe_find_fmt(context->format.fmt.pix_mp.pixelformat);
 }
+
+static int pispbe_alloc_context(struct video_device *vdev,
+				struct video_device_context **c)
+{
+	struct pispbe_node *node = pispbe_node_from_vdev(vdev);
+	struct pispbe_dev *pispbe = node->pispbe;
+	struct pispbe_context *context;
+	struct vb2_queue *q;
+	int ret;
+
+	if (node->num_contexts >= PISPBE_MAX_NUM_CONTEXTS)
+		return -EINVAL;
+
+	*c = kzalloc(sizeof(*context), GFP_KERNEL);
+	if (!*c)
+		return -ENOMEM;
+
+	context = pispbe_context(*c);
+	context->pispbe = pispbe;
+	context->node = node;
+
+	mutex_init(&context->vdev_context.queue_lock);
+
+	INIT_LIST_HEAD(&context->ready_queue);
+	spin_lock_init(&context->ready_lock);
+
+	context->format.type = node->buf_type;
+	pispbe_node_def_fmt(node, context);
+
+	q = &context->vdev_context.queue;
+	q->type = node->buf_type;
+	q->io_modes = VB2_MMAP | VB2_DMABUF;
+	q->mem_ops = &vb2_dma_contig_memops;
+	q->drv_priv = node;
+	q->ops = &pispbe_node_queue_ops;
+	q->buf_struct_size = sizeof(struct pispbe_buffer);
+	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	q->dev = pispbe->dev;
+	/* get V4L2 to handle node->queue locking */
+	q->lock = &context->vdev_context.queue_lock;
+
+	ret = vb2_queue_init(q);
+	if (ret < 0) {
+		dev_err(pispbe->dev, "vb2_queue_init failed\n");
+		goto err_cleanup;
+	}
+
+	node->num_contexts++;
+
+	return 0;
+
+err_cleanup:
+	mutex_destroy(&context->vdev_context.queue_lock);
+	kfree(*c);
+	return ret;
+}
+
+static void pispbe_release_context(struct video_device_context *context)
+{
+	struct pispbe_node *node = pispbe_node_from_vdev(context->vfd);
+
+	vb2_queue_release(&context->queue);
+	mutex_destroy(&context->queue_lock);
+	kfree(context);
+
+	node->num_contexts--;
+}
+
+static const struct video_device_context_ops pispbe_context_ops = {
+	.alloc_context = pispbe_alloc_context,
+	.release_context = pispbe_release_context,
+};
+
+static const struct video_device pispbe_videodev = {
+	.name = PISPBE_NAME,
+	.vfl_dir = VFL_DIR_M2M, /* gets overwritten */
+	.fops = &pispbe_fops,
+	.ioctl_ops = &pispbe_node_ioctl_ops,
+	.context_ops = &pispbe_context_ops,
+	.minor = -1,
+	.release = video_device_release_empty,
+};
 
 /*
  * Initialise a struct pispbe_node and register it as /dev/video<N>
@@ -1451,7 +1539,6 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	struct pispbe_node *node = &pispbe->node[id];
 	struct media_entity *entity = &node->vfd.entity;
 	struct video_device *vdev = &node->vfd;
-	struct vb2_queue *q = &node->queue;
 	int ret;
 
 	node->id = id;
@@ -1459,29 +1546,6 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	node->buf_type = node_desc[id].buf_type;
 
 	mutex_init(&node->node_lock);
-	mutex_init(&node->queue_lock);
-	INIT_LIST_HEAD(&node->ready_queue);
-	spin_lock_init(&node->ready_lock);
-
-	node->format.type = node->buf_type;
-	pispbe_node_def_fmt(node);
-
-	q->type = node->buf_type;
-	q->io_modes = VB2_MMAP | VB2_DMABUF;
-	q->mem_ops = &vb2_dma_contig_memops;
-	q->drv_priv = node;
-	q->ops = &pispbe_node_queue_ops;
-	q->buf_struct_size = sizeof(struct pispbe_buffer);
-	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->dev = pispbe->dev;
-	/* get V4L2 to handle node->queue locking */
-	q->lock = &node->queue_lock;
-
-	ret = vb2_queue_init(q);
-	if (ret < 0) {
-		dev_err(pispbe->dev, "vb2_queue_init failed\n");
-		goto err_mutex_destroy;
-	}
 
 	*vdev = pispbe_videodev; /* default initialization */
 	strscpy(vdev->name, node_desc[id].ent_name, sizeof(vdev->name));
@@ -1489,7 +1553,6 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 	vdev->vfl_dir = output ? VFL_DIR_TX : VFL_DIR_RX;
 	/* get V4L2 to serialise our ioctls */
 	vdev->lock = &node->node_lock;
-	vdev->queue = &node->queue;
 	vdev->device_caps = V4L2_CAP_STREAMING | node_desc[id].caps;
 
 	node->pad.flags = output ? MEDIA_PAD_FL_SOURCE : MEDIA_PAD_FL_SINK;
@@ -1498,8 +1561,10 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 		dev_err(pispbe->dev,
 			"Failed to register media pads for %s device node\n",
 			NODE_NAME(node));
-		goto err_unregister_queue;
+		goto err_mutex_destroy;
 	}
+
+	video_set_drvdata(vdev, node);
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO,
 				    PISPBE_VIDEO_NODE_OFFSET);
@@ -1507,9 +1572,8 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 		dev_err(pispbe->dev,
 			"Failed to register video %s device node\n",
 			NODE_NAME(node));
-		goto err_unregister_queue;
+		goto err_mutex_destroy;
 	}
-	video_set_drvdata(vdev, node);
 
 	if (output)
 		ret = media_create_pad_link(entity, 0, &pispbe->sd.entity,
@@ -1529,11 +1593,8 @@ static int pispbe_init_node(struct pispbe_dev *pispbe, unsigned int id)
 
 err_unregister_video_dev:
 	video_unregister_device(&node->vfd);
-err_unregister_queue:
-	vb2_queue_release(&node->queue);
 err_mutex_destroy:
 	mutex_destroy(&node->node_lock);
-	mutex_destroy(&node->queue_lock);
 	return ret;
 }
 
@@ -1631,10 +1692,8 @@ static int pispbe_init_devices(struct pispbe_dev *pispbe)
 err_unregister_mdev:
 	media_device_unregister(mdev);
 err_unregister_nodes:
-	while (num_regist-- > 0) {
+	while (num_regist-- > 0)
 		video_unregister_device(&pispbe->node[num_regist].vfd);
-		vb2_queue_release(&pispbe->node[num_regist].queue);
-	}
 	v4l2_device_unregister_subdev(&pispbe->sd);
 	media_entity_cleanup(&pispbe->sd.entity);
 err_unregister_v4l2:
@@ -1662,9 +1721,7 @@ static void pispbe_destroy_devices(struct pispbe_dev *pispbe)
 
 	for (int i = PISPBE_NUM_NODES - 1; i >= 0; i--) {
 		video_unregister_device(&pispbe->node[i].vfd);
-		vb2_queue_release(&pispbe->node[i].queue);
 		mutex_destroy(&pispbe->node[i].node_lock);
-		mutex_destroy(&pispbe->node[i].queue_lock);
 	}
 
 	media_device_cleanup(&pispbe->mdev);
