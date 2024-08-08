@@ -151,6 +151,19 @@ static const struct pispbe_node_description node_desc[PISPBE_NUM_NODES] = {
  * Structure to describe a single node /dev/video<N> which represents a single
  * input or output queue to the PiSP Back End device.
  */
+struct pispbe_node;
+struct pispbe_context {
+	struct video_device_context vdev_context;
+
+	/* Protect pispbe_node->ready_queue and pispbe_buffer->ready_list */
+	spinlock_t ready_lock;
+	struct list_head ready_queue;
+	struct v4l2_format format;
+	const struct pisp_be_format *pisp_format;
+	struct pispbe_dev *pispbe;
+	struct pispbe_node *node;
+};
+
 struct pispbe_node {
 	unsigned int id;
 	int vfl_dir;
